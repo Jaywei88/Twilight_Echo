@@ -3,7 +3,7 @@
   "name": "标签工作台",
   "version": "1.0.0",
   "description": "批量整理本地音乐的标签、封面、歌词与文件名。",
-  "author": "Twilight Echo",
+  "author": "Twilight Echo Unofficial Fork",
   "license": "Apache-2.0",
   "type": ["tool", "ui"],
   "main": "index.mjs",

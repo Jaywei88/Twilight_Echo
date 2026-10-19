@@ -1776,21 +1776,17 @@ html[data-theme='dark'] .settings-preview-page .settings-nav-results button.acti
 
 html[data-theme='dark'] .settings-preview-page .restart-banner,
 html[data-theme='dark'] .settings-preview-page .engine-warning,
-html[data-theme='dark'] .settings-preview-page .compute-badge,
-html[data-theme='dark'] .settings-preview-page .sponsor-card,
-html[data-theme='dark'] .settings-preview-page .sponsor-pending {
+html[data-theme='dark'] .settings-preview-page .compute-badge {
   border-color: rgba(245, 158, 11, 0.28);
   background: rgba(245, 158, 11, 0.12);
   color: #fbbf24;
 }
 
-html[data-theme='dark'] .settings-preview-page .restart-banner strong,
-html[data-theme='dark'] .settings-preview-page .sponsor-card h3 {
+html[data-theme='dark'] .settings-preview-page .restart-banner strong {
   color: #fde68a;
 }
 
-html[data-theme='dark'] .settings-preview-page .restart-banner span,
-html[data-theme='dark'] .settings-preview-page .sponsor-card p {
+html[data-theme='dark'] .settings-preview-page .restart-banner span {
   color: rgba(253, 230, 138, 0.78);
 }
 

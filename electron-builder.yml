@@ -21,6 +21,7 @@ files:
   - '!out/renderer/audio-engine/**'
   - '!out/renderer/plugins/**'
   - '!out/renderer/plugin-index/**'
+  - '!out/renderer/**/*.test.*'
   # Keep packaged Inter/Jakarta + MiSans subsets; strip legacy TTF/OTF/WOFF.
   - '!out/renderer/font/Alibaba-PuHuiTi-Medium.ttf'
   - '!out/renderer/font/Outfit-**'
@@ -110,10 +111,16 @@ extraResources:
     to: plugins
     filter:
       - '**/*'
+      - '!**/*.test.mjs'
+      - '!**/*.test.cjs'
   - from: resources/plugin-index
     to: plugin-index
     filter:
       - '**/*'
+  - from: LICENSE
+    to: LICENSE
+  - from: NOTICE
+    to: NOTICE
 win:
   executableName: TwilightEcho
   icon: build/icon.ico

@@ -15,7 +15,7 @@ body:
       label: 提交前检查
       description: 如果已有相同建议，请到原 Issue 补充你的使用场景。
       options:
-        - label: 我已搜索已有的 [Issues](https://github.com/Px-asen/Twilight_Echo/issues)，没有找到相同建议。
+        - label: 我已搜索已有的 [Issues](https://github.com/Jaywei88/Twilight_Echo/issues)，没有找到相同建议。
           required: true
 
   - type: textarea

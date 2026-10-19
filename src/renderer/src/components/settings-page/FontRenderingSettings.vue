@@ -24,7 +24,7 @@ function setRendering(fontRendering: AppFontRendering): void {
       <span id="font-rendering-description">
         文字发虚时可选“清晰”，轻微增强笔画，适合图片和透明背景。立即生效。
       </span>
-      <span class="font-rendering-sample">夜航星 · Twilight Echo · 0123456789</span>
+      <span class="font-rendering-sample">字体预览 · Twilight Echo · 0123456789</span>
     </div>
     <div
       class="segmented-control"

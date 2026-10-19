@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { reactive } from 'vue'
@@ -227,26 +227,16 @@ function readSettingsPageSources(): string {
     .join('\n')
 }
 
-test('about settings expose bundled sponsor payment options and sponsor list', () => {
+test('about settings identify the unofficial fork and keep upstream contacts out', () => {
   const source = readSettingsPageSources()
 
-  assert.match(source, /const AFDIAN_URL = 'https:\/\/ifdian\.net\/a\/pxasen'/)
-  assert.match(source, />\s*赞助作者\s*</)
-  assert.match(source, />\s*赞助名单\s*</)
-  assert.match(source, /如需加入赞助名单，请联系作者。/)
-  assert.match(source, /const ALIPAY_QR_URL = '\.\/sponsor\/alipay\.jpg'/)
-  assert.match(source, /const WECHAT_QR_URL = '\.\/sponsor\/wechat\.png'/)
-  assert.match(source, /name: '江枫Jiang1021'/)
-  assert.match(source, /useEscapeToClose\(sponsorDialogOpen, closeSponsorDialog\)/)
-  assert.match(source, /useFocusTrap\(sponsorDialogRef, sponsorDialogOpen\)/)
-  assert.match(source, /const QQ_GROUP_QR_URL = '\.\/qq-group-qrcode\.jpg'/)
-  assert.match(source, />\s*Q群\s*</)
-  assert.match(source, /TwilightEcho 交流群/)
-  assert.match(source, /群号：1093775290/)
-  assert.match(source, /useEscapeToClose\(qqGroupDialogOpen, closeQqGroupDialog\)/)
-  assert.match(source, /useFocusTrap\(qqGroupDialogRef, qqGroupDialogOpen\)/)
-  assert.ok(existsSync(new URL('../../../../resources/sponsor/alipay.jpg', import.meta.url)))
-  assert.ok(existsSync(new URL('../../../../resources/sponsor/wechat.png', import.meta.url)))
+  assert.match(source, /非官方分支/)
+  assert.match(source, /vibe-coding/i)
+  assert.match(source, /未知 bug/)
+  assert.match(source, /UPSTREAM_URL/)
+  assert.match(source, /本仓库 Releases/)
+  assert.doesNotMatch(source, /afdian|ALIPAY|WECHAT|QQ_GROUP|赞助名单|1093775290/i)
+  assert.doesNotMatch(source, /Pxasen@outlook|3248974986/i)
 })
 
 test('appearance parser quotes display-sized background image handles when building css url values', () => {

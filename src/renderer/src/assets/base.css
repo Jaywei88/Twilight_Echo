@@ -2352,11 +2352,6 @@ html[data-theme='dark'] .danger-soft-button.solid-hover:hover {
   background: var(--te-danger-soft-bg);
 }
 
-html[data-theme='dark'] .sponsor-card {
-  border-color: rgba(251, 191, 36, 0.3);
-  background: var(--te-warning-soft-bg);
-}
-
 html[data-theme='dark'] .restart-banner {
   border-color: rgba(251, 191, 36, 0.3);
   background: var(--te-warning-soft-bg);
@@ -2687,20 +2682,6 @@ html[data-theme='dark'] .settings-preview-layout .about-copy span {
   color: var(--te-primary-300);
 }
 
-html[data-theme='dark'] .settings-preview-layout .sponsor-card h3 {
-  color: var(--te-warning-soft-fg);
-}
-
-html[data-theme='dark'] .settings-preview-layout .sponsor-card p {
-  color: rgba(252, 211, 77, 0.72);
-}
-
-html[data-theme='dark'] .settings-preview-layout .sponsor-pending {
-  border-color: rgba(251, 191, 36, 0.3);
-  background: var(--te-card-bg);
-  color: var(--te-warning-soft-fg);
-}
-
 html[data-theme='dark'] .settings-preview-layout .about-links button {
   border-color: var(--te-card-border);
   background: var(--te-card-bg);
@@ -2832,7 +2813,6 @@ html[data-te-card-custom='on']
     .folder-card,
     .empty-list-card,
     .filter-card,
-    .sponsor-card,
     .update-card,
     .dsp-module-card,
     .device-card,

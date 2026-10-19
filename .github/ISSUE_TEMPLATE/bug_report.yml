@@ -16,9 +16,9 @@ body:
       label: 提交前检查
       description: 如果已有相同问题，请到原 Issue 补充信息，避免重复提交。
       options:
-        - label: 我已搜索已有的 [Issues](https://github.com/Px-asen/Twilight_Echo/issues)，没有找到相同问题。
+        - label: 我已搜索已有的 [Issues](https://github.com/Jaywei88/Twilight_Echo/issues)，没有找到相同问题。
           required: true
-        - label: 我已查看 [常见问题](https://github.com/Px-asen/Twilight_Echo/blob/HEAD/README.md#常见问题)，仍未解决。
+        - label: 我已查看 [README](https://github.com/Jaywei88/Twilight_Echo/blob/HEAD/README.md)，仍未解决。
           required: true
 
   - type: input

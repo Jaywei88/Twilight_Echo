@@ -222,8 +222,10 @@ test('update checks download GitHub release installers without electron-updater'
     read('src/main/app/appUpdateRelease.ts'),
     read('src/main/app/appUpdateDownload.ts')
   ].join('\n')
-  assert.match(projectUrls, /export const GITHUB_OWNER = 'Px-asen'/)
+  assert.match(projectUrls, /export const GITHUB_OWNER = 'Jaywei88'/)
   assert.match(projectUrls, /export const GITHUB_REPO = 'Twilight_Echo'/)
+  assert.match(projectUrls, /export const UPSTREAM_URL = `https:\/\/github\.com\/\$\{UPSTREAM_OWNER\}\/\$\{UPSTREAM_REPO\}`/)
+  assert.match(projectUrls, /export const UPSTREAM_OWNER = 'Px-asen'/)
   assert.match(
     projectUrls,
     /GITHUB_API_LATEST_RELEASE_URL = `https:\/\/api\.github\.com\/repos\/\$\{GITHUB_OWNER\}\/\$\{GITHUB_REPO\}\/releases\/latest`/

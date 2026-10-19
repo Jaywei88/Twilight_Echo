@@ -1,11 +1,15 @@
 {
   "name": "TwilightEcho",
   "version": "1.3.1",
-  "description": "Twilight Echo music player",
+  "description": "Unofficial community fork of Twilight Echo with a native local-music tag workshop",
   "license": "Apache-2.0",
   "main": "./out/main/index.js",
-  "author": "Pxasen.com",
-  "homepage": "https://TwilightEcho.com",
+  "author": "Twilight Echo Unofficial Fork",
+  "homepage": "https://github.com/Jaywei88/Twilight_Echo",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Jaywei88/Twilight_Echo.git"
+  },
   "packageManager": "pnpm@11.7.0",
   "scripts": {
     "test:afterglow": "node --experimental-strip-types --test src/shared/afterglowMode.test.ts src/main/app/afterglowModeWiring.test.ts src/main/app/afterglowQueueCore.test.ts src/main/app/afterglowSourceResolver.test.ts src/renderer/src/utils/nativeQueueLoader.test.ts",

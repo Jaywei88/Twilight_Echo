@@ -117,11 +117,11 @@ const {
                     </div></template
                   ><template v-else-if="previewPage === 'player'"
                     ><div class="appearance-mini-cover">♫</div>
-                    <strong>夜航星</strong>
+                    <strong>示例曲目</strong>
                     <p>在夜色中听见回响</p></template
                   ><template v-else
                     ><div
-                      v-for="(title, index) in ['夜航星', 'MASAYUME CHASING', '如诗一般的形容你']"
+                      v-for="(title, index) in ['示例曲目一', '示例曲目二', '示例曲目三']"
                       :key="title"
                       class="appearance-mini-track"
                     >
@@ -131,7 +131,7 @@ const {
                         >♫</span
                       ><span
                         ><strong>{{ title }}</strong
-                        ><small>{{ ['未知歌手', 'BoA', '周杰伦'][index] }}</small></span
+                        ><small>{{ ['示例歌手 A', '示例歌手 B', '示例歌手 C'][index] }}</small></span
                       ><small>03:40</small>
                     </div>
                     <div class="appearance-mini-card">
@@ -141,7 +141,7 @@ const {
                 </div>
               </div>
               <div class="appearance-mini-player">
-                <span>♫ 夜航星</span><strong>⏮ ▶ ⏭</strong><span>☷</span>
+                <span>♫ 示例曲目</span><strong>⏮ ▶ ⏭</strong><span>☷</span>
               </div>
             </div>
             <p class="appearance-preview-hint">

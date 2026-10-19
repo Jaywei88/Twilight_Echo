@@ -1,0 +1,23 @@
+Twilight Echo
+Unofficial community fork
+
+Upstream project: https://github.com/Px-asen/Twilight_Echo
+Upstream author: Pxasen.com
+License: Apache License, Version 2.0 (see LICENSE)
+
+This distribution is an unofficial fork of Twilight Echo. It is not an official
+release, is not affiliated with the upstream maintainer, and is not endorsed by
+the upstream project.
+
+Modifications made by this fork include a native local-music tag workshop,
+multi-source metadata matching, batch tag application, DSF/DFF/M4A tag support,
+and the distribution and documentation changes listed in CHANGES.md.
+
+The upstream copyright and license notices are retained. Third-party notices
+are retained in THIRD-PARTY-NOTICES.txt. The Apache License 2.0 does not grant
+rights to use the upstream project's trademarks, names, or logos; references to
+"Twilight Echo" describe the origin of this software only.
+
+This fork is a vibe-coding product. It may contain unknown bugs and has not been
+validated against every music library, device, or file format. Review the
+warnings in README.md before downloading or modifying files.

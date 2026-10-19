@@ -3,7 +3,7 @@
   "name": "多源标签元数据",
   "version": "1.0.0",
   "description": "为标签工作台提供 QQ 音乐、酷我音乐与 iTunes 的标签、封面和歌词回退来源。",
-  "author": "Px-asen",
+  "author": "Twilight Echo Unofficial Fork",
   "license": "Apache-2.0",
   "type": ["provider"],
   "main": "index.mjs",

@@ -357,7 +357,12 @@ export const playerBarPageVisibilityOptions: { value: PlayerBarPageVisibility; l
   { value: 'hidden', label: '完全隐藏' }
 ]
 
-export { GITHUB_URL, HOMEPAGE_URL, RELEASES_URL } from '../../../../shared/projectUrls.ts'
+export {
+  GITHUB_URL,
+  HOMEPAGE_URL,
+  RELEASES_URL,
+  UPSTREAM_URL
+} from '../../../../shared/projectUrls.ts'
 
 export interface SettingsSearchEntry {
   /** Stable target, independent of translated labels. Optional for legacy callers. */
@@ -1350,16 +1355,10 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     terms: '系统 性能 备份 关于 版本 更新 更新 下载 安装 版本 发布 github releases 下载 / 安装更新'
   },
   {
-    id: 'project-support',
-    section: 'system',
-    title: '支持项目发展',
-    terms: '系统 性能 备份 关于 版本 更新 赞助 支持 捐赠 项目 开源 爱发电 支持项目发展'
-  },
-  {
     id: 'project-links',
     section: 'system',
-    title: '开源致谢与交流群',
-    terms: '系统 性能 备份 关于 版本 更新 开源 致谢 交流 群 社区 感谢 license 开源致谢与交流群'
+    title: '开源信息与反馈',
+    terms: '系统 性能 备份 关于 版本 更新 开源 致谢 上游 分支 仓库 releases 反馈 issue license 开源信息与反馈'
   },
   {
     id: 'language',
