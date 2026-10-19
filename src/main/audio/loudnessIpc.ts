@@ -21,6 +21,10 @@ const MAX_LOUDNESS_FILE_PATH_LENGTH = 4096
 // Whole-file loudness passes maxAnalysisSeconds: 0; the pool deadline must
 // cover the same 14_400s bound the engine manager clamps loudnorm analysis to.
 const LOUDNESS_WHOLE_FILE_TASK_TIMEOUT_MS = (14_400 + 120) * 1000
+// A streamed track is decoded over the network, so cap the measured window
+// instead of downloading the whole song again. Integrated loudness over the
+// first five minutes is within a fraction of a dB of the full track.
+const LOUDNESS_STREAM_ANALYSIS_SECONDS = 300
 
 export function setupLoudnessAnalysisIpc(): void {
   runtime.libraryLoudnessManager = new LibraryLoudnessManager({
@@ -54,9 +58,12 @@ export function setupLoudnessAnalysisIpc(): void {
     analyzeFile: async (request) => {
       const service = runtime.audioAnalysisService
       if (!service) throw new Error('audio analysis service is unavailable')
+      const streamed = /^https?:\/\//i.test(request.filePath)
       return await service.analyzeLoudness(
         request.filePath,
-        JSON.stringify({ maxAnalysisSeconds: 0 }),
+        JSON.stringify({
+          maxAnalysisSeconds: streamed ? LOUDNESS_STREAM_ANALYSIS_SECONDS : 0
+        }),
         { priority: request.priority ?? 50, timeoutMs: LOUDNESS_WHOLE_FILE_TASK_TIMEOUT_MS }
       )
     },

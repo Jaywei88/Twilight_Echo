@@ -1,4 +1,5 @@
 import { FileAnalysisManager } from './fileAnalysisManager.ts'
+import type { FileAnalysisRequestOptions } from './fileAnalysisManager.ts'
 
 import {
   LOUDNESS_ANALYSIS_ALGORITHM_VERSION,
@@ -53,8 +54,11 @@ export class LoudnessAnalysisManager extends FileAnalysisManager<
           : null
     })
   }
-  peekCached(request: LoudnessAnalysisRequest): Promise<LoudnessAnalysisResult | null> {
-    return this.peekCachedAnalysis(request)
+  peekCached(
+    request: LoudnessAnalysisRequest,
+    options: FileAnalysisRequestOptions = {}
+  ): Promise<LoudnessAnalysisResult | null> {
+    return this.peekCachedAnalysis(request, options)
   }
   clearFailures(): void {
     this.resetFailures()

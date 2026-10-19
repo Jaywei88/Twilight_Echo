@@ -58,6 +58,46 @@ test('LoudnessAnalysisManager skips remote URLs', async () => {
   assert.equal(result.status, 'skipped')
 })
 
+test('loudnorm can measure a streaming source and caches it per track, not per URL', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'twilight-loudness-stream-'))
+  const analyzed: string[] = []
+  const manager = new LoudnessAnalysisManager({
+    cache: new LoudnessAnalysisCache(join(dir, 'loudness-analysis-cache.json')),
+    analyzeFile: async (request) => {
+      analyzed.push(request.filePath)
+      return {
+        integratedLufs: -12.5,
+        truePeakDb: -0.8,
+        source: 'analyzed',
+        analyzedAt: new Date().toISOString(),
+        algorithmVersion: LOUDNESS_ANALYSIS_ALGORITHM_VERSION
+      }
+    }
+  })
+
+  const first = await manager.requestAnalysis(
+    { trackId: 'ncm:42', filePath: 'https://cdn.test/song.flac?token=abc' },
+    { allowRemote: true }
+  )
+  assert.equal(first.status, 'completed')
+  assert.deepEqual(analyzed, ['https://cdn.test/song.flac?token=abc'])
+
+  // A re-signed URL for the same song must hit the measurement taken before.
+  const second = await manager.requestAnalysis(
+    { trackId: 'ncm:42', filePath: 'https://cdn.test/song.flac?token=xyz' },
+    { allowRemote: true }
+  )
+  assert.equal(second.status, 'cached')
+  assert.equal(analyzed.length, 1)
+
+  const peeked = await manager.peekCached(
+    { trackId: 'ncm:42', filePath: 'https://cdn.test/song.flac?token=zzz' },
+    { allowRemote: true }
+  )
+  assert.equal(peeked?.integratedLufs, -12.5)
+  await rm(dir, { recursive: true, force: true })
+})
+
 test('LoudnessAnalysisManager deduplicates concurrent file analysis', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'twilight-loudness-manager-'))
   const filePath = join(dir, 'song.wav')

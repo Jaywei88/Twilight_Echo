@@ -33,6 +33,16 @@ interface FileAnalysisManagerOptions<
   rejectAnalysis?: (analysis: Analysis) => Unavailable | null
 }
 
+export interface FileAnalysisRequestOptions {
+  /**
+   * Measure an http(s) source instead of a local file. Streaming tracks have no
+   * path to stat, so the cache identity falls back to the track id: the same
+   * song keeps its measurement even though provider URLs carry expiring tokens.
+   * Off by default — renderer-issued analysis stays local-only.
+   */
+  allowRemote?: boolean
+}
+
 /** One owner for deduplication, cooldown, cancellation and cache rollback. */
 export class FileAnalysisManager<
   Request extends FileAnalysisRequest,
@@ -85,8 +95,12 @@ export class FileAnalysisManager<
     this.rejectAnalysis = options.rejectAnalysis
   }
 
-  requestAnalysis(request: Request): Promise<FileAnalysisRequestResult<Analysis, Unavailable>> {
-    if (!isLocalFilePath(request.filePath)) {
+  requestAnalysis(
+    request: Request,
+    options: FileAnalysisRequestOptions = {}
+  ): Promise<FileAnalysisRequestResult<Analysis, Unavailable>> {
+    const remote = options.allowRemote === true && isHttpSource(request.filePath)
+    if (!remote && !isLocalFilePath(request.filePath)) {
       return Promise.resolve({ status: 'skipped', reason: 'not-local-file' })
     }
     const existing = this.inFlight.get(request.filePath)
@@ -107,7 +121,7 @@ export class FileAnalysisManager<
 
     const generation = ++this.nextGeneration
     this.activeGenerations.set(request.filePath, generation)
-    const task = this.run(request, generation).finally(() => {
+    const task = this.run(request, generation, remote).finally(() => {
       this.inFlight.delete(request.filePath)
       if (this.activeGenerations.get(request.filePath) === generation) {
         this.activeGenerations.delete(request.filePath)
@@ -129,25 +143,32 @@ export class FileAnalysisManager<
 
   private async run(
     request: Request,
-    generation: number
+    generation: number,
+    remote = false
   ): Promise<FileAnalysisRequestResult<Analysis, Unavailable>> {
     if (!this.isCurrent(request.filePath, generation)) {
       return { status: 'skipped', reason: 'cancelled' }
     }
     let identity: Identity
     let cacheCandidate: Analysis | null = null
-    try {
-      const fileStat = await stat(request.filePath)
-      if (!this.isCurrent(request.filePath, generation)) {
-        return { status: 'skipped', reason: 'cancelled' }
+    if (remote) {
+      // No local file to stat; anchor the identity on the track instead so a
+      // re-signed URL still hits the measurement taken for the same song.
+      identity = this.buildIdentity(remoteIdentityRequest(request), 0, 0)
+    } else {
+      try {
+        const fileStat = await stat(request.filePath)
+        if (!this.isCurrent(request.filePath, generation)) {
+          return { status: 'skipped', reason: 'cancelled' }
+        }
+        if (!fileStat.isFile()) return { status: 'skipped', reason: 'not-file' }
+        identity = this.buildIdentity(request, fileStat.size, fileStat.mtimeMs)
+      } catch (error) {
+        if (!this.isCurrent(request.filePath, generation)) {
+          return { status: 'skipped', reason: 'cancelled' }
+        }
+        return { status: 'skipped', reason: error instanceof Error ? error.message : String(error) }
       }
-      if (!fileStat.isFile()) return { status: 'skipped', reason: 'not-file' }
-      identity = this.buildIdentity(request, fileStat.size, fileStat.mtimeMs)
-    } catch (error) {
-      if (!this.isCurrent(request.filePath, generation)) {
-        return { status: 'skipped', reason: 'cancelled' }
-      }
-      return { status: 'skipped', reason: error instanceof Error ? error.message : String(error) }
     }
 
     const cached = await this.cache.get(identity)
@@ -221,7 +242,17 @@ export class FileAnalysisManager<
       }
     }
   }
-  protected async peekCachedAnalysis(request: Request): Promise<Analysis | null> {
+  protected async peekCachedAnalysis(
+    request: Request,
+    options: FileAnalysisRequestOptions = {}
+  ): Promise<Analysis | null> {
+    if (options.allowRemote === true && isHttpSource(request.filePath)) {
+      try {
+        return await this.cache.get(this.buildIdentity(remoteIdentityRequest(request), 0, 0))
+      } catch {
+        return null
+      }
+    }
     if (!isLocalFilePath(request.filePath)) return null
     try {
       const fileStat = await stat(request.filePath)
@@ -240,4 +271,13 @@ export class FileAnalysisManager<
 
 function isLocalFilePath(value: string): boolean {
   return !!value && !/^[a-z][a-z\d+.-]*:\/\//i.test(value)
+}
+
+function isHttpSource(value: string): boolean {
+  return /^https?:\/\//i.test(value)
+}
+
+/** Stable identity for a streamed track: the signed URL changes, the song does not. */
+function remoteIdentityRequest<Request extends FileAnalysisRequest>(request: Request): Request {
+  return { ...request, filePath: `remote:${request.trackId}` }
 }

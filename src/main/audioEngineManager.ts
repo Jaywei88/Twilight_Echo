@@ -863,7 +863,11 @@ export class AudioEngineManager extends EventEmitter {
     }
 
     const trackId = this.queue.find((item) => item.source === source)?.id ?? source
-    const cached = await manager.peekCached({ trackId, filePath: source })
+    // Streaming tracks have no local file, but the analysis worker decodes the
+    // stream with the same FFmpeg build playback uses. Without this every
+    // provider track reported "无测量，使用 Fallback" and loudnorm did nothing.
+    const analysisOptions = { allowRemote: /^https?:\/\//i.test(source) }
+    const cached = await manager.peekCached({ trackId, filePath: source }, analysisOptions)
     if (
       this.destroyed ||
       this.processing.volumeNormalization !== 'loudnorm' ||
@@ -884,36 +888,38 @@ export class AudioEngineManager extends EventEmitter {
     this.loudnormStatus = 'measuring'
     this.emit('loudnorm-status', { status: 'measuring' as LoudnormStatus, source })
     // Fire-and-forget analysis; first play uses fallback gain until cache is ready.
-    void manager.requestAnalysis({ trackId, filePath: source, priority: 100 }).then((result) => {
-      // Drop stale results after mode leave / track change / destroy.
-      if (
-        this.destroyed ||
-        this.processing.volumeNormalization !== 'loudnorm' ||
-        this.loudnormStatusSource !== source
-      ) {
-        return
-      }
-      if (result.status === 'completed' || result.status === 'cached') {
-        this.loudnormStatus = 'cached'
-        this.applyLoudnormMeasurementToQueue(source, result.analysis)
-        this.emit('loudnorm-status', {
-          status: 'cached' as LoudnormStatus,
-          source,
-          analysis: result.analysis
-        })
-      } else if (result.status === 'unavailable') {
-        this.loudnormStatus = 'unavailable'
-        this.emit('loudnorm-status', { status: 'unavailable' as LoudnormStatus, source })
-      } else if (result.status === 'failed' || result.status === 'skipped') {
-        this.loudnormStatus =
-          result.status === 'skipped' && result.reason === 'cancelled' ? 'idle' : 'fallback'
-        this.emit('loudnorm-status', {
-          status: this.loudnormStatus as LoudnormStatus,
-          source,
-          reason: result.reason
-        })
-      }
-    })
+    void manager
+      .requestAnalysis({ trackId, filePath: source, priority: 100 }, analysisOptions)
+      .then((result) => {
+        // Drop stale results after mode leave / track change / destroy.
+        if (
+          this.destroyed ||
+          this.processing.volumeNormalization !== 'loudnorm' ||
+          this.loudnormStatusSource !== source
+        ) {
+          return
+        }
+        if (result.status === 'completed' || result.status === 'cached') {
+          this.loudnormStatus = 'cached'
+          this.applyLoudnormMeasurementToQueue(source, result.analysis)
+          this.emit('loudnorm-status', {
+            status: 'cached' as LoudnormStatus,
+            source,
+            analysis: result.analysis
+          })
+        } else if (result.status === 'unavailable') {
+          this.loudnormStatus = 'unavailable'
+          this.emit('loudnorm-status', { status: 'unavailable' as LoudnormStatus, source })
+        } else if (result.status === 'failed' || result.status === 'skipped') {
+          this.loudnormStatus =
+            result.status === 'skipped' && result.reason === 'cancelled' ? 'idle' : 'fallback'
+          this.emit('loudnorm-status', {
+            status: this.loudnormStatus as LoudnormStatus,
+            source,
+            reason: result.reason
+          })
+        }
+      })
   }
 
   /**
