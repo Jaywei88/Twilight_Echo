@@ -6,12 +6,14 @@ import type { Track } from '@renderer/types/music'
 import CoverImg from '@renderer/components/CoverImg.vue'
 import LocalLibraryTagManager from '@renderer/components/LocalLibraryTagManager.vue'
 import { useMusicStore } from '@renderer/stores/useMusicStore'
+import { useTagWorkshopLaunch } from '@renderer/stores/useTagWorkshopLaunch'
 import { selectLocalLibraryActionTracks } from '@renderer/utils/localTrackRemovalPolicy.ts'
 import type { LocalLibraryTagPatch } from '../../../shared/localLibraryTags.ts'
 
 const props = defineProps<{ track: Track }>()
 const editing = ref(false)
 const versions = ref(false)
+const { requestLaunch } = useTagWorkshopLaunch()
 const MusicVersionsHost = defineAsyncComponent(
   () => import('@renderer/components/music-versions/MusicVersionsHost.vue')
 )
@@ -28,6 +30,11 @@ function applyTags(paths: string[], patch: LocalLibraryTagPatch): void {
   useMusicStore().applyLocalTagWrite(paths, patch)
 }
 const emit = defineEmits<{ close: [] }>()
+function openInWorkshop(): void {
+  if (editableTracks.value.length === 0) return
+  requestLaunch(editableTracks.value.map((track) => track.filePath))
+  emit('close')
+}
 const dialog = ref<HTMLDialogElement | null>(null)
 useNativeDialog(dialog)
 useEscapeToClose(
@@ -89,6 +96,14 @@ useEscapeToClose(
         @click="editing = true"
       >
         编辑歌曲信息
+      </button>
+      <button
+        v-if="editableTracks.length"
+        type="button"
+        class="track-info-edit"
+        @click="openInWorkshop"
+      >
+        在标签工作台中打开
       </button>
       <button type="button" class="track-info-edit" @click="versions = true">歌曲与专辑版本</button>
     </template>

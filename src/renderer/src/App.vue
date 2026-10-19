@@ -82,6 +82,7 @@ import { useNcmStore } from './stores/useNcmStore'
 import { isPlaybackSpace } from '@renderer/app/playbackKeyboard'
 import { usePlayerStore } from './stores/usePlayerStore'
 import { useSettingsStore } from './stores/useSettingsStore'
+import { useTagWorkshopLaunch } from './stores/useTagWorkshopLaunch'
 import { useThemeStore, applyActiveTheme, bootstrapThemeRuntime } from './stores/useThemeStore'
 import { getStartupSnapshot } from './app/startupSnapshot'
 import { isAfterglowRendererRestore } from '../../shared/afterglowMode.ts'
@@ -602,6 +603,16 @@ function openThemeWorkshop(): void {
   closeSettingsPage()
   onSelectPluginPage(page)
 }
+const { pendingPaths: tagWorkshopPendingPaths } = useTagWorkshopLaunch()
+watch(tagWorkshopPendingPaths, (filePaths) => {
+  if (filePaths.length === 0) return
+  const page = availablePluginPages.value.find(
+    (page) => page.pluginId === MUSIC_TAG_WORKSHOP_ID && page.id === MUSIC_TAG_WORKSHOP_PAGE_ID
+  )
+  if (!page) return
+  closeSettingsPage()
+  onSelectPluginPage(page)
+})
 const localSidebarItems = computed(() =>
   uiContributions.value.filter((contribution) => contribution.kind === 'localSidebarItem')
 )

@@ -492,6 +492,96 @@
   color: var(--te-primary-500);
 }
 
+.tag-workshop-duplicates {
+  margin-top: 18px;
+  padding: 12px 14px;
+  border: 1px solid var(--te-card-border);
+  border-radius: 12px;
+  background: var(--te-subtle-bg);
+}
+.tag-workshop-duplicates > header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+}
+.tag-workshop-duplicates > header small {
+  display: block;
+  color: var(--te-settings-text-muted);
+  font-size: 11px;
+}
+.tag-workshop-duplicate-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 300px;
+  margin: 10px 0 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+.tag-workshop-duplicate-list > li {
+  padding: 8px;
+  border: 1px solid var(--te-card-border);
+  border-radius: 9px;
+  background: var(--te-card-bg);
+}
+.tag-workshop-duplicate-list > li > header {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 5px;
+  font-size: 12px;
+}
+.tag-workshop-duplicate-list > li > header small,
+.tag-workshop-duplicate-meta small {
+  color: var(--te-settings-text-muted);
+  font-size: 11px;
+}
+.tag-workshop-duplicate-list ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.tag-workshop-duplicate-list ul > li {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 0;
+  border-top: 1px solid var(--te-card-border);
+  font-size: 12px;
+}
+.tag-workshop-duplicate-list ul > li:first-child {
+  border-top: 0;
+}
+.tag-workshop-duplicate-meta {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.tag-workshop-duplicate-meta > strong,
+.tag-workshop-duplicate-meta > small {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.tag-workshop-duplicate-state {
+  flex: 0 0 auto;
+  color: var(--te-settings-text-muted);
+  font-size: 11px;
+}
+.tag-workshop-duplicate-list ul > li > button {
+  flex: 0 0 auto;
+  min-height: 26px;
+  padding: 2px 8px;
+  font-size: 11px;
+}
+
 .tag-workshop-fields {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -647,9 +737,19 @@
 .tag-workshop-progress-head {
   display: flex;
   flex: 1 1 100%;
+  gap: 10px;
   justify-content: space-between;
   color: var(--te-settings-text-muted);
   font-size: 12px;
+}
+.tag-workshop-progress-head span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.tag-workshop-progress-head span:last-child {
+  flex: 0 0 auto;
 }
 .tag-workshop-progress-bar {
   flex: 1 1 240px;

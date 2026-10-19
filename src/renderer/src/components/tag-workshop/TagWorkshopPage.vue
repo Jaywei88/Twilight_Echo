@@ -5,6 +5,7 @@ import { formatDuration } from '@renderer/components/song-list/formatDuration'
 import { syncPluginProviders, useMediaProviders } from '@renderer/providers'
 import { useMusicStore } from '@renderer/stores/useMusicStore'
 import { usePlayerStore } from '@renderer/stores/usePlayerStore'
+import { useTagWorkshopLaunch } from '@renderer/stores/useTagWorkshopLaunch'
 import type { Track } from '@renderer/types/music'
 import {
   buildMetadataMatchCandidates,
@@ -16,7 +17,9 @@ import {
   summarizeTagWriteResults,
   tagPatchFromWorkshopForm,
   tagWritePathKey,
-  validateTagCoverFile
+  toDuplicateReviewGroups,
+  validateTagCoverFile,
+  type DuplicateReviewGroup
 } from '@renderer/utils/localLibraryTagManagement.ts'
 import {
   filenameExtension,
@@ -117,6 +120,43 @@ const hiddenCueCount = computed(
   () => musicStore.tracks.value.filter((track) => track.subTrack || track.cueRange).length
 )
 
+const { pendingPaths: tagWorkshopPendingPaths, consumePendingPaths } = useTagWorkshopLaunch()
+const pendingLaunchPaths = ref<string[]>([])
+
+function applyPendingLaunchSelection(): void {
+  if (pendingLaunchPaths.value.length === 0) return
+  const keys = new Set(pendingLaunchPaths.value.map((filePath) => tagWritePathKey(filePath)))
+  const matches = editableTracks.value.filter((track) => keys.has(tagWritePathKey(track.filePath)))
+  if (matches.length === 0) {
+    if (musicStore.tracks.value.length === 0) return
+    pendingLaunchPaths.value = []
+    selectionError.value = '所选歌曲不在可编辑的本地曲库中'
+    return
+  }
+  selectedIds.value = new Set(
+    matches.slice(0, MUSIC_TAG_WORKSHOP_MAX_ITEMS).map((track) => track.id)
+  )
+  const firstMatch = matches[0]
+  const index = filteredTracks.value.findIndex((track) => track.id === firstMatch.id)
+  if (index >= 0) page.value = Math.floor(index / PAGE_SIZE) + 1
+  pendingLaunchPaths.value = []
+  selectionError.value =
+    matches.length > MUSIC_TAG_WORKSHOP_MAX_ITEMS
+      ? `一次最多编辑 ${MUSIC_TAG_WORKSHOP_MAX_ITEMS} 首歌曲`
+      : ''
+}
+
+watch(
+  tagWorkshopPendingPaths,
+  (filePaths) => {
+    if (filePaths.length === 0) return
+    pendingLaunchPaths.value = consumePendingPaths()
+    applyPendingLaunchSelection()
+  },
+  { immediate: true }
+)
+watch(editableTracks, applyPendingLaunchSelection)
+
 function blankValues(): Record<FieldKey, string> {
   return Object.fromEntries(FIELD_KEYS.map((key) => [key, ''])) as Record<FieldKey, string>
 }
@@ -167,6 +207,12 @@ const renameArmed = ref(false)
 const renameResults = shallowRef<LocalLibraryRenameItemResult[]>([])
 const TAG_TOKEN_HINT = '{title} {artist} {album} {albumArtist} {genre} {year} {track:02} {disc:02}'
 
+const duplicateChecking = ref(false)
+const duplicateChecked = ref(false)
+const duplicateError = ref('')
+const duplicateGroups = shallowRef<DuplicateReviewGroup[]>([])
+const duplicateSelectionSignature = ref('')
+
 const resultSummary = computed(() => summarizeTagWriteResults(results.value))
 const failedResults = computed(() =>
   results.value.filter((result) => result.status !== 'success').slice(0, 20)
@@ -180,6 +226,20 @@ const selectionLabel = computed(() => {
   if (selectedTracks.value.length === 0) return '未选择歌曲'
   if (selectedTracks.value.length === 1) return `正在编辑：${singleTrack.value?.title ?? ''}`
   return `批量编辑 ${selectedTracks.value.length} 首歌曲`
+})
+const selectedPathKeys = computed(
+  () => new Set(selectedTracks.value.map((track) => tagWritePathKey(track.filePath)))
+)
+const duplicateStale = computed(
+  () =>
+    duplicateChecked.value &&
+    duplicateSelectionSignature.value !== [...selectedPathKeys.value].sort().join('|')
+)
+const progressFileName = computed(() => {
+  const filePath = progress.value?.filePath
+  if (!filePath) return ''
+  const normalized = filePath.replace(/\\/g, '/')
+  return normalized.slice(normalized.lastIndexOf('/') + 1)
 })
 
 const patchPreview = computed(() => {
@@ -318,6 +378,14 @@ function resetCover(): void {
   coverPreview.value = null
 }
 
+function resetDuplicates(): void {
+  duplicateChecking.value = false
+  duplicateChecked.value = false
+  duplicateError.value = ''
+  duplicateGroups.value = []
+  duplicateSelectionSignature.value = ''
+}
+
 function applySnapshot(tags: LocalLibraryTagSnapshot): void {
   for (const key of FIELD_KEYS) {
     const value = tags[key]
@@ -335,6 +403,7 @@ function applySnapshot(tags: LocalLibraryTagSnapshot): void {
 async function loadSelectedSnapshot(): Promise<void> {
   const track = singleTrack.value
   resetEditor()
+  resetDuplicates()
   if (!track) return
   matchQuery.value = [track.title, track.artist].filter(Boolean).join(' ')
   tagPattern.value =
@@ -393,6 +462,7 @@ function selectVisible(): void {
 function clearSelection(): void {
   selectedIds.value = new Set()
   selectionError.value = ''
+  resetDuplicates()
 }
 
 function onFieldInput(key: FieldKey): void {
@@ -679,6 +749,13 @@ async function restoreJournal(): Promise<void> {
     const restored = successfulTagPaths(result.items)
     notice.value =
       restored.length > 0 ? `已从恢复日志还原 ${restored.length} 首歌曲。` : '恢复日志中没有可还原的歌曲。'
+    if (restored.length > 0) {
+      try {
+        await syncRestoredLibraryTags(restored)
+      } catch {
+        notice.value += ' 曲库显示未完全刷新，可重新扫描曲库。'
+      }
+    }
     if (singleTrack.value) await loadSelectedSnapshot()
   } catch (error) {
     formError.value = error instanceof Error ? error.message : '无法从恢复日志还原'
@@ -816,6 +893,87 @@ async function renameSelected(): Promise<void> {
     renameError.value = error instanceof Error ? error.message : '重命名失败'
   } finally {
     renaming.value = false
+  }
+}
+
+async function checkDuplicates(): Promise<void> {
+  if (selectedTracks.value.length === 0 || duplicateChecking.value || busy.value) return
+  duplicateChecking.value = true
+  duplicateError.value = ''
+  duplicateChecked.value = false
+  duplicateGroups.value = []
+  const keys = new Set(selectedPathKeys.value)
+  try {
+    const result = await window.api.library.detectDuplicates()
+    duplicateGroups.value = toDuplicateReviewGroups(result).filter((entry) =>
+      entry.group.items.some((item) => keys.has(tagWritePathKey(item.filePath)))
+    )
+    duplicateSelectionSignature.value = [...keys].sort().join('|')
+    duplicateChecked.value = true
+  } catch (error) {
+    duplicateError.value = error instanceof Error ? error.message : '重复歌曲检查失败'
+  } finally {
+    duplicateChecking.value = false
+  }
+}
+
+function isPathSelected(filePath: string): boolean {
+  return selectedPathKeys.value.has(tagWritePathKey(filePath))
+}
+
+function trackForPath(filePath: string): Track | null {
+  const key = tagWritePathKey(filePath)
+  return editableTracks.value.find((track) => tagWritePathKey(track.filePath) === key) ?? null
+}
+
+function addDuplicateToSelection(filePath: string): void {
+  if (busy.value) return
+  const track = trackForPath(filePath)
+  if (!track || selectedIds.value.has(track.id)) return
+  if (selectedIds.value.size >= MUSIC_TAG_WORKSHOP_MAX_ITEMS) {
+    selectionError.value = `一次最多编辑 ${MUSIC_TAG_WORKSHOP_MAX_ITEMS} 首歌曲`
+    return
+  }
+  const next = new Set(selectedIds.value)
+  next.add(track.id)
+  selectedIds.value = next
+  selectionError.value = ''
+}
+
+function snapshotToPatch(tags: LocalLibraryTagSnapshot): LocalLibraryTagPatch {
+  return {
+    title: tags.title,
+    artist: tags.artist,
+    album: tags.album,
+    albumArtist: tags.albumArtist,
+    track: tags.track,
+    trackCount: tags.trackCount,
+    disc: tags.disc,
+    discCount: tags.discCount,
+    year: tags.year,
+    genre: tags.genre,
+    composer: tags.composer,
+    comment: tags.comment,
+    lyrics: tags.lyrics
+  }
+}
+
+async function syncRestoredLibraryTags(filePaths: readonly string[]): Promise<void> {
+  const uniquePaths = [...new Set(filePaths)]
+  const chunkSize = 100
+  for (let offset = 0; offset < uniquePaths.length; offset += chunkSize) {
+    const chunk = uniquePaths.slice(offset, offset + chunkSize)
+    const read = await window.api.library.readTags({ filePaths: chunk, includeCover: true })
+    const covers: Array<{ filePath: string; handle: string | null }> = []
+    for (const item of read.items) {
+      if (!item.tags) continue
+      musicStore.applyLocalTagWrite([item.filePath], snapshotToPatch(item.tags))
+      const handle = item.tags.coverData
+        ? await window.api.data.cacheCover(item.tags.coverData).catch(() => null)
+        : null
+      covers.push({ filePath: item.filePath, handle })
+    }
+    for (const cover of covers) musicStore.applyLocalCover([cover.filePath], cover.handle)
   }
 }
 
@@ -1215,6 +1373,68 @@ onBeforeUnmount(() => {
             </ul>
           </section>
 
+          <section class="tag-workshop-duplicates" aria-label="重复歌曲检查">
+            <header>
+              <div>
+                <strong>重复歌曲检查</strong>
+                <small>检查所选歌曲是否与其他本地文件重复，重复项可直接加入当前选择</small>
+              </div>
+              <button
+                type="button"
+                :disabled="duplicateChecking || busy"
+                @click="checkDuplicates"
+              >
+                {{
+                  duplicateChecking
+                    ? '检查中…'
+                    : duplicateChecked
+                      ? '重新检查'
+                      : '检查所选歌曲'
+                }}
+              </button>
+            </header>
+            <p v-if="duplicateError" class="tag-workshop-alert" role="alert">{{ duplicateError }}</p>
+            <p v-else-if="duplicateStale" class="tag-workshop-notice" role="status">
+              所选歌曲已变化，可重新检查。
+            </p>
+            <p
+              v-else-if="duplicateChecked && duplicateGroups.length === 0"
+              class="tag-workshop-notice"
+              role="status"
+            >
+              未发现与所选歌曲重复的文件。
+            </p>
+            <ul v-else-if="duplicateGroups.length > 0" class="tag-workshop-duplicate-list">
+              <li v-for="entry in duplicateGroups" :key="entry.group.key">
+                <header>
+                  <strong>{{ entry.label }}</strong>
+                  <small>{{ entry.group.items.length }} 个文件</small>
+                </header>
+                <ul>
+                  <li v-for="item in entry.group.items" :key="item.id">
+                    <div class="tag-workshop-duplicate-meta">
+                      <strong>{{ item.title || '未知标题' }}</strong>
+                      <small>{{ item.artist || '未知艺术家' }} · {{ item.album || '未知专辑' }}</small>
+                      <small class="tag-workshop-duplicate-path">{{ item.filePath }}</small>
+                    </div>
+                    <span v-if="isPathSelected(item.filePath)" class="tag-workshop-duplicate-state">
+                      已选择
+                    </span>
+                    <button
+                      v-else-if="trackForPath(item.filePath)"
+                      type="button"
+                      :disabled="busy"
+                      @click="addDuplicateToSelection(item.filePath)"
+                    >
+                      加入选择
+                    </button>
+                    <span v-else class="tag-workshop-duplicate-state">不在可编辑曲库</span>
+                  </li>
+                </ul>
+              </li>
+            </ul>
+          </section>
+
           <section class="tag-workshop-preview" aria-label="写入预览">
             <div class="tag-workshop-preview-header">
               <strong>写入预览</strong>
@@ -1236,8 +1456,12 @@ onBeforeUnmount(() => {
 
             <div v-if="busy" class="tag-workshop-progress" role="status">
               <div class="tag-workshop-progress-head">
-                <span>
-                  {{ progress ? `正在写入 ${progress.current} / ${progress.total}` : '准备写入…' }}
+                <span :title="progress?.filePath">
+                  {{
+                    progress
+                      ? `正在写入 ${progress.current} / ${progress.total}${progressFileName ? ` · ${progressFileName}` : ''}`
+                      : '准备写入…'
+                  }}
                 </span>
                 <span>{{ progressPercent }}%</span>
               </div>
@@ -1258,9 +1482,12 @@ onBeforeUnmount(() => {
                 写入 {{ selectedTracks.length }} 首歌曲
               </button>
               <button type="button" :disabled="restoring" @click="restoreJournal">
-                {{ restoreArmed ? '再次点击确认还原' : '从恢复日志还原' }}
+                {{ restoreArmed ? '再次点击确认还原' : '从恢复日志还原到写入前' }}
               </button>
             </div>
+            <p class="tag-workshop-hint">
+              还原会把最近一次批量写入涉及的文件恢复为写入前备份，并同步刷新曲库中的标签与封面。
+            </p>
           </section>
 
           <section v-if="results.length > 0" class="tag-workshop-results" aria-label="写入结果">

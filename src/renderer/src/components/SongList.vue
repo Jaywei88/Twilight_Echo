@@ -22,6 +22,7 @@ import { useUnifiedMusicSearch } from '../app/useUnifiedMusicSearch'
 import { syncPluginProviders, useMediaProviders } from '../providers'
 import { useMusicStore } from '../stores/useMusicStore'
 import { usePlayerStore } from '../stores/usePlayerStore'
+import { useTagWorkshopLaunch } from '../stores/useTagWorkshopLaunch'
 import { useSettingsStore } from '../stores/useSettingsStore'
 import { usePlaybackBookmarks } from '../stores/playbackBookmarks'
 import { useProviderStore } from '../stores/useProviderStore'
@@ -1362,6 +1363,16 @@ function openTagManager(initialView: 'edit' | 'duplicates' = 'edit'): void {
   closeContextMenu()
 }
 
+const { requestLaunch: requestTagWorkshopLaunch } = useTagWorkshopLaunch()
+
+function openTagWorkshop(tracks: Track[] = contextActionTracks.value): void {
+  const filePaths = selectLocalLibraryActionTracks(tracks).map((track) => track.filePath)
+  if (filePaths.length === 0) return
+  infoTrack.value = null
+  closeContextMenu()
+  requestTagWorkshopLaunch(filePaths)
+}
+
 function closeLibraryToolsMenuDelayed(): void {
   setTimeout(() => {
     libraryToolsMenuOpen.value = false
@@ -2312,10 +2323,10 @@ function locateCurrentTrack(): void {
                   type="button"
                   class="selection-btn"
                   :disabled="libraryMutationPending"
-                  @click="openTagManager('edit')"
+                  @click="openTagWorkshop(selectionActionTracks)"
                 >
                   <i class="pi pi-tag"></i>
-                  <span>编辑标签{{ localSelectionActionLabel }}</span>
+                  <span>标签工作台{{ localSelectionActionLabel }}</span>
                 </button>
                 <button
                   v-if="isPlaylistDetail"
@@ -2577,6 +2588,15 @@ function locateCurrentTrack(): void {
                 >
                   <i class="ph ph-disc"></i>
                   <span>查看专辑</span>
+                </div>
+                <div
+                  v-if="contextLocalTrackCount > 0"
+                  class="menu-item"
+                  data-te-interactive
+                  @click="openTagWorkshop(contextActionTracks)"
+                >
+                  <i class="ph ph-tag"></i>
+                  <span>在标签工作台中编辑{{ contextLocalActionLabel }}</span>
                 </div>
                 <div
                   v-if="contextLocalTrackCount > 0"
