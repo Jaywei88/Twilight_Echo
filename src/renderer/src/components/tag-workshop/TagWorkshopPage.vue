@@ -583,6 +583,16 @@ function removeCover(): void {
   coverError.value = ''
 }
 
+function discardCoverDraft(): void {
+  coverDirty.value = false
+  coverDraft.value = undefined
+  coverError.value = ''
+  coverPreview.value =
+    snapshot.value?.coverData && snapshot.value.coverMimeType
+      ? bytesToDataUrl(snapshot.value.coverData, snapshot.value.coverMimeType)
+      : null
+}
+
 function candidateKey(candidate: MetadataMatchCandidate): string {
   return `${candidate.providerId}:${candidate.track.id}`
 }
@@ -1627,15 +1637,7 @@ onBeforeUnmount(() => {
                   v-if="coverDirty"
                   type="button"
                   :disabled="busy"
-                  @click="
-                    coverDirty = false
-                    coverDraft = undefined
-                    coverError = ''
-                    coverPreview =
-                      snapshot?.coverData && snapshot.coverMimeType
-                        ? bytesToDataUrl(snapshot.coverData, snapshot.coverMimeType)
-                        : null
-                  "
+                  @click="discardCoverDraft"
                 >
                   撤销封面修改
                 </button>
