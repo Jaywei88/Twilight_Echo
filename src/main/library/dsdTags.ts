@@ -82,21 +82,24 @@ export function probeDsdTagWrite(filePath: string): string | null {
       }
     } else {
       const layout = inspectDff(fd)
-      if (
-        layout.id3Offset !== null &&
-        layout.id3PayloadOffset !== null &&
-        layout.id3PayloadSize !== null &&
-        layout.id3ChunkSize !== null &&
-        layout.id3PayloadSize > 0
-      ) {
+      if (layout.id3Offset !== null) {
+        if (
+          layout.id3PayloadOffset === null ||
+          layout.id3PayloadSize === null ||
+          layout.id3ChunkSize === null
+        ) {
+          throw new Error('DFF 的 ID3 标签块不完整')
+        }
         if (layout.id3Offset + layout.id3ChunkSize !== layout.fileSize) {
           return '无法安全写入：DFF 的 ID3 标签块不在文件末尾'
         }
-        readId3TagAt(
-          fd,
-          layout.id3PayloadOffset,
-          layout.id3PayloadOffset + layout.id3PayloadSize
-        )
+        if (layout.id3PayloadSize > 0) {
+          readId3TagAt(
+            fd,
+            layout.id3PayloadOffset,
+            layout.id3PayloadOffset + layout.id3PayloadSize
+          )
+        }
       } else if (
         layout.lastChunkPayloadSize !== null &&
         (layout.lastChunkPayloadSize & 1) === 1
