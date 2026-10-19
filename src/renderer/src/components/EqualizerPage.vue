@@ -5,6 +5,7 @@ import { useEqualizerHistory } from '@renderer/composables/useEqualizerHistory'
 import type { EqSnapshot } from '@renderer/composables/useEqualizerHistory'
 import { groupEqBandPatches } from '@renderer/utils/parametricEqSelection'
 import type { EqBandPatch } from '@renderer/utils/parametricEqSelection'
+import { toPlainIpcPayload } from '@renderer/utils/ipcPayload'
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useBackHandler } from '@renderer/app/useBackStack.ts'
@@ -102,6 +103,8 @@ const opraSearching = ref(false)
 const opraRefreshing = ref(false)
 const opraApplyingEqId = ref('')
 const opraError = ref('')
+/** Preset save failures used to be console-only; the button looked dead. */
+const presetError = ref('')
 let pendingBandFrame = 0
 const pendingBandPatches = new Map<number, Partial<EqualizerBand>>()
 let pendingPreamp: number | null = null
@@ -443,7 +446,12 @@ async function syncActiveSceneEq(nextSettings: AudioProcessingSettings): Promise
       ? [...cloneBands(headphoneCompensation.value.bands), ...cloneBands(nextSettings.eqBands)]
       : nextSettings.eqBands
   }
-  await window.api.audioEngine.setDspScenes(dspState.scenes, dspState.pinnedSceneId)
+  // The scene carries bands copied out of the reactive editor state; hand the
+  // engine a plain snapshot so contextBridge does not reject the payload.
+  await window.api.audioEngine.setDspScenes(
+    toPlainIpcPayload(dspState.scenes),
+    dspState.pinnedSceneId
+  )
 }
 
 async function updateAudioProcessing(patch: Partial<AudioProcessingSettings>): Promise<void> {
@@ -881,20 +889,22 @@ async function applyOpraProfile(profile: OpraProfile): Promise<void> {
       opraError.value = `该 profile 包含暂不支持的滤波器：${fullProfile.unsupportedBandTypes.join(', ')}`
       return
     }
-    const savedSettings = await window.api.settings.update({
-      headphoneCompensation: {
-        enabled: true,
-        productId: fullProfile.productId,
-        productName: fullProfile.productName,
-        vendorName: fullProfile.vendorName,
-        eqId: fullProfile.eqId,
-        author: fullProfile.author,
-        details: fullProfile.details,
-        link: fullProfile.link,
-        preampDb: fullProfile.preampDb,
-        bands: cloneBands(fullProfile.bands)
-      }
-    })
+    const savedSettings = await window.api.settings.update(
+      toPlainIpcPayload({
+        headphoneCompensation: {
+          enabled: true,
+          productId: fullProfile.productId,
+          productName: fullProfile.productName,
+          vendorName: fullProfile.vendorName,
+          eqId: fullProfile.eqId,
+          author: fullProfile.author,
+          details: fullProfile.details,
+          link: fullProfile.link,
+          preampDb: fullProfile.preampDb,
+          bands: cloneBands(fullProfile.bands)
+        }
+      })
+    )
     appSettings.value = { ...appSettings.value, ...savedSettings }
     await syncActiveSceneEq(audioProcessing.value)
   } catch (err) {
@@ -905,14 +915,20 @@ async function applyOpraProfile(profile: OpraProfile): Promise<void> {
 }
 
 async function disableOpraCompensation(): Promise<void> {
-  if (!appSettings.value) return
+  if (!appSettings.value) {
+    opraError.value = '设置尚未载入，请稍后重试'
+    return
+  }
+  opraError.value = ''
   try {
-    const savedSettings = await window.api.settings.update({
-      headphoneCompensation: {
-        ...headphoneCompensation.value,
-        enabled: false
-      }
-    })
+    const savedSettings = await window.api.settings.update(
+      toPlainIpcPayload({
+        headphoneCompensation: {
+          ...headphoneCompensation.value,
+          enabled: false
+        }
+      })
+    )
     // Explicitly construct a new object to guarantee Vue reactivity triggers
     appSettings.value = {
       ...appSettings.value,
@@ -924,15 +940,10 @@ async function disableOpraCompensation(): Promise<void> {
     }
     await syncActiveSceneEq(audioProcessing.value)
   } catch (err) {
+    // Do not pretend the switch flipped: the main process still has it enabled,
+    // so the next settings snapshot would silently re-enable the compensation.
+    opraError.value = `停用 OPRA 补偿失败：${err instanceof Error ? err.message : String(err)}`
     console.error('停用 OPRA 补偿失败：', err)
-    // Fallback: at least update local state so the UI reflects the change
-    appSettings.value = {
-      ...appSettings.value,
-      headphoneCompensation: {
-        ...headphoneCompensation.value,
-        enabled: false
-      }
-    }
   }
 }
 
@@ -961,6 +972,7 @@ async function saveEqPreset(): Promise<void> {
     })}`
   if (!name || !appSettings.value || saving.value) return
   saving.value = true
+  presetError.value = ''
   try {
     const nextPreset: AudioEqPreset = {
       id: `custom-${Date.now()}`,
@@ -969,12 +981,17 @@ async function saveEqPreset(): Promise<void> {
       eqPreamp: audioProcessing.value.eqPreamp,
       eqBands: cloneBands(audioProcessing.value.eqBands)
     }
-    appSettings.value = await window.api.settings.update({
-      audioEqPresets: [...userPresets.value, nextPreset]
-    })
+    // userPresets holds reactive proxies once presets exist; contextBridge
+    // rejects those before the preload's own JSON round-trip can run.
+    appSettings.value = await window.api.settings.update(
+      toPlainIpcPayload({
+        audioEqPresets: [...userPresets.value, nextPreset]
+      })
+    )
     presetName.value = ''
     presetMenuOpen.value = true
   } catch (err) {
+    presetError.value = `保存预设失败：${err instanceof Error ? err.message : String(err)}`
     console.error('保存均衡器预设失败：', err)
   } finally {
     saving.value = false
@@ -1182,6 +1199,8 @@ watch([activeTab, spectrumVisible, responseView, isPlaying, spectrumFrozen], upd
                 >
                   新建
                 </button>
+                <p v-if="!presetName.trim()" class="preset-hint">先输入名称，「新建」才可用</p>
+                <p v-else-if="presetError" class="preset-error">{{ presetError }}</p>
               </div>
             </div>
           </div>
@@ -1404,6 +1423,8 @@ watch([activeTab, spectrumVisible, responseView, isPlaying, spectrumFrozen], upd
                       >
                         新建
                       </button>
+                      <p v-if="!presetName.trim()" class="preset-hint">先输入名称，「新建」才可用</p>
+                      <p v-else-if="presetError" class="preset-error">{{ presetError }}</p>
                     </div>
                   </div>
                 </div>
@@ -1658,6 +1679,23 @@ watch([activeTab, spectrumVisible, responseView, isPlaying, spectrumFrozen], upd
 .preset-create button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* The create button is disabled while the name is empty; say so instead of
+   leaving a dead-looking button with no explanation. */
+.preset-create .preset-hint,
+.preset-create .preset-error {
+  flex-basis: 100%;
+  font-size: calc(var(--te-font-size-body, 14px) * 11 / 14);
+  line-height: 1.4;
+}
+
+.preset-create .preset-hint {
+  color: var(--te-text-tertiary, rgba(15, 23, 42, 0.45));
+}
+
+.preset-create .preset-error {
+  color: var(--te-danger-500, #dc2626);
 }
 
 * {

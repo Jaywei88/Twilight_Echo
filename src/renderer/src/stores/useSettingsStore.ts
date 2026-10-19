@@ -1,4 +1,5 @@
 import { normalizeNavigationPagePreferences } from '../../../shared/navigationPages.ts'
+import { toPlainIpcPayload } from '../utils/ipcPayload.ts'
 import { DEFAULT_DOWNLOAD_PREFERENCES } from '../../../shared/downloadPreferences.ts'
 import { computed, ref } from 'vue'
 import { normalizeAppBackgroundSettings } from '../../../shared/appAppearance.ts'
@@ -293,7 +294,7 @@ const fallbackSettings: AppSettings = {
  * than at each call site means a new nested setting cannot reintroduce the crash.
  */
 function toWirePatch(patch: Partial<AppSettings>): Partial<AppSettings> {
-  return JSON.parse(JSON.stringify(patch)) as Partial<AppSettings>
+  return toPlainIpcPayload(patch)
 }
 
 const settings = ref<AppSettings>({ ...fallbackSettings })

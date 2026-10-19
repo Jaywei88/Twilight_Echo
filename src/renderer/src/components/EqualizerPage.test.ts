@@ -918,3 +918,56 @@ test('loading parametric presets preserves zero and thirty-two bands', async () 
   assert.equal(appSettings.value?.audioEqPresets[0].eqBands.length, 0)
   assert.equal(appSettings.value?.audioEqPresets[1].eqBands.length, 32)
 })
+
+/**
+ * Regression: the page called window.api.settings.update() with raw reactive
+ * state. contextBridge serialises renderer -> preload with structured clone and
+ * rejects Vue proxies, so every save after the first failed with
+ * "An object could not be cloned." while the UI showed nothing.
+ */
+test('every settings.update call from the equalizer page sends plain IPC payloads', () => {
+  const calls = page.match(/window\.api\.settings\.update\(([\s\S]{0,40})/g) ?? []
+  assert.ok(calls.length >= 3, `expected at least 3 settings.update calls, saw ${calls.length}`)
+  for (const call of calls) {
+    assert.match(
+      call,
+      /window\.api\.settings\.update\(\s*toPlainIpcPayload\(/,
+      'settings.update must be wrapped in toPlainIpcPayload()'
+    )
+  }
+})
+
+test('failed preset save is reported instead of only logged', () => {
+  const declaration = page.match(/async function saveEqPreset\(\): Promise<void> \{[\s\S]*?\n\}/)?.[0]
+  assert.ok(declaration)
+  assert.match(declaration, /presetError\.value = /)
+  assert.match(declaration, /toPlainIpcPayload\(/)
+})
+
+test('failed OPRA disable does not pretend the switch flipped', () => {
+  const declaration = page.match(
+    /async function disableOpraCompensation\(\): Promise<void> \{[\s\S]*?\n\}/
+  )?.[0]
+  assert.ok(declaration)
+  assert.match(declaration, /toPlainIpcPayload\(/)
+  assert.match(declaration, /opraError\.value = /)
+
+  const catchBlock = declaration.match(/catch \(err\) \{[\s\S]*?\n  \}/)?.[0] ?? ''
+  assert.ok(catchBlock, 'expected a catch block')
+  // The old fallback wrote enabled:false locally, which made the next snapshot
+  // silently restore the compensation.
+  assert.doesNotMatch(catchBlock, /enabled: false/)
+})
+
+/**
+ * Same failure mode one layer down: the scene handed to the engine carries EQ
+ * bands copied out of reactive state, so it needs the same normalisation.
+ */
+test('scene eq sync sends a plain IPC payload', () => {
+  const declaration = page.match(
+    /async function syncActiveSceneEq\([\s\S]*?\n\}/
+  )?.[0]
+  assert.ok(declaration)
+  assert.match(declaration, /toPlainIpcPayload\(dspState\.scenes\)/)
+})
+
