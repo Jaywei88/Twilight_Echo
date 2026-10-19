@@ -1,5 +1,7 @@
 import { accessSync, constants, copyFileSync, existsSync, mkdirSync, rmSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, extname, join } from 'node:path'
+import { isDsdFilePath, probeDsdTagWrite, readDsdTags, writeDsdTags } from './dsdTags.ts'
+import { applyTagInput, snapshotFromTag } from './tagFields.ts'
 import { loadTaglib, type Taglib } from './taglib.ts'
 import {
   loadJsonFileWithBackup,
@@ -10,7 +12,11 @@ import type { LocalLibraryTagSnapshot } from '../../shared/localLibraryTags.ts'
 
 const TAG_WRITE_JOURNAL_FILE = 'tag-write-journal.json'
 const TAG_WRITE_JOURNAL_MAX_BYTES = 2 * 1024 * 1024
-const MAX_TAG_READ_COVER_BYTES = 8 * 1024 * 1024
+/** TagLib# has no extension mapping for these container aliases. */
+const TAGLIB_MIME_OVERRIDES: Record<string, string> = {
+  '.alac': 'audio/mp4',
+  '.mqa': 'audio/flac'
+}
 
 export interface TagWriteInput {
   filePath: string
@@ -246,34 +252,12 @@ export function readTagsFromFile(
   filePath: string,
   options: TagReadOptions = {}
 ): LocalLibraryTagSnapshot {
-  const { File, PictureType } = loadTaglib()
+  if (isDsdFilePath(filePath)) return readDsdTags(filePath, options)
+  const { File } = loadTaglib()
   let media: Taglib.File | undefined
   try {
-    media = File.createFromPath(filePath)
-    const tag = media.tag
-    const pictures = tag.pictures
-    const picture =
-      pictures.find((candidate) => candidate.type === PictureType.FrontCover) ?? pictures[0]
-    return {
-      title: optionalText(tag.title),
-      artist: optionalText(tag.performers[0]),
-      album: optionalText(tag.album),
-      albumArtist: optionalText(tag.albumArtists[0]),
-      track: optionalPositiveNumber(tag.track),
-      trackCount: optionalPositiveNumber(tag.trackCount),
-      disc: optionalPositiveNumber(tag.disc),
-      discCount: optionalPositiveNumber(tag.discCount),
-      year: optionalPositiveNumber(tag.year),
-      genre: optionalText(tag.genres[0]),
-      composer: optionalText(tag.composers.join('; ')),
-      comment: optionalText(tag.comment),
-      lyrics: optionalText(tag.lyrics),
-      hasCover: Boolean(picture),
-      coverMimeType: picture?.mimeType ? picture.mimeType : null,
-      ...(options.includeCover && picture && picture.data.length <= MAX_TAG_READ_COVER_BYTES
-        ? { coverData: picture.data.toByteArray() }
-        : {})
-    }
+    media = createMediaFile(File, filePath)
+    return snapshotFromTag(media.tag, options)
   } finally {
     media?.dispose()
   }
@@ -286,10 +270,11 @@ export function probeTagWrite(filePath: string): string | null {
   } catch {
     return '文件不可写：只读、权限不足或文件不存在'
   }
+  if (isDsdFilePath(filePath)) return probeDsdTagWrite(filePath)
   const { File } = loadTaglib()
   let media: Taglib.File | undefined
   try {
-    media = File.createFromPath(filePath)
+    media = createMediaFile(File, filePath)
     if (media.isPossiblyCorrupt) {
       const reasons = media.corruptionReasons.filter(Boolean).join('；')
       return reasons
@@ -305,59 +290,24 @@ export function probeTagWrite(filePath: string): string | null {
 }
 
 function writeTags(input: TagWriteInput): void {
-  const { ByteVector, File, Picture, PictureType } = loadTaglib()
+  if (isDsdFilePath(input.filePath)) {
+    writeDsdTags(input)
+    return
+  }
+  const { File } = loadTaglib()
   let media: Taglib.File | undefined
   try {
-    media = File.createFromPath(input.filePath)
-    if (input.title !== undefined) media.tag.title = input.title ?? ''
-    if (input.artist !== undefined) {
-      media.tag.performers = input.artist ? [input.artist] : []
-    }
-    if (input.album !== undefined) media.tag.album = input.album ?? ''
-    if (input.albumArtist !== undefined) {
-      media.tag.albumArtists = input.albumArtist ? [input.albumArtist] : []
-    }
-    if (input.track !== undefined) media.tag.track = input.track ?? 0
-    if (input.trackCount !== undefined) media.tag.trackCount = input.trackCount ?? 0
-    if (input.disc !== undefined) media.tag.disc = input.disc ?? 0
-    if (input.discCount !== undefined) media.tag.discCount = input.discCount ?? 0
-    if (input.year !== undefined) media.tag.year = input.year ?? 0
-    if (input.genre !== undefined) media.tag.genres = input.genre ? [input.genre] : []
-    if (input.composer !== undefined) media.tag.composers = splitTagValues(input.composer)
-    if (input.comment !== undefined) media.tag.comment = input.comment ?? ''
-    if (input.lyrics !== undefined) media.tag.lyrics = input.lyrics ?? ''
-    if (input.coverData === null) {
-      media.tag.pictures = []
-    } else if (input.coverData && input.coverMimeType) {
-      media.tag.pictures = [
-        Picture.fromFullData(
-          ByteVector.fromByteArray(input.coverData),
-          PictureType.FrontCover,
-          input.coverMimeType,
-          ''
-        )
-      ]
-    }
+    media = createMediaFile(File, input.filePath)
+    applyTagInput(media.tag, input)
     media.save()
   } finally {
     media?.dispose()
   }
 }
 
-function splitTagValues(value: string | null): string[] {
-  if (!value) return []
-  return value
-    .split(/[;；\n]/)
-    .map((part) => part.trim())
-    .filter(Boolean)
-}
-
-function optionalText(value: string | undefined | null): string | null {
-  return typeof value === 'string' && value.trim() ? value : null
-}
-
-function optionalPositiveNumber(value: number | undefined | null): number | null {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null
+function createMediaFile(File: typeof Taglib.File, filePath: string): Taglib.File {
+  const mimeType = TAGLIB_MIME_OVERRIDES[extname(filePath).toLowerCase()]
+  return mimeType ? File.createFromPath(filePath, mimeType) : File.createFromPath(filePath)
 }
 
 function yieldToEventLoop(): Promise<void> {
