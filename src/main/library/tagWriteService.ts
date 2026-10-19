@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, rmSync } from 'node:fs'
+import { accessSync, constants, copyFileSync, existsSync, mkdirSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { loadTaglib, type Taglib } from './taglib.ts'
 import {
@@ -274,6 +274,31 @@ export function readTagsFromFile(
         ? { coverData: picture.data.toByteArray() }
         : {})
     }
+  } finally {
+    media?.dispose()
+  }
+}
+
+/** Returns a user-facing reason when taglib cannot safely write the file, otherwise null. */
+export function probeTagWrite(filePath: string): string | null {
+  try {
+    accessSync(filePath, constants.W_OK)
+  } catch {
+    return '文件不可写：只读、权限不足或文件不存在'
+  }
+  const { File } = loadTaglib()
+  let media: Taglib.File | undefined
+  try {
+    media = File.createFromPath(filePath)
+    if (media.isPossiblyCorrupt) {
+      const reasons = media.corruptionReasons.filter(Boolean).join('；')
+      return reasons
+        ? `无法安全写入：文件标签结构异常（${reasons}）`
+        : '无法安全写入：文件标签结构异常'
+    }
+    return null
+  } catch (error) {
+    return `无法解析文件标签：${errorMessage(error)}`
   } finally {
     media?.dispose()
   }

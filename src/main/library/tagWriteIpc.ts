@@ -14,6 +14,7 @@ import type {
 } from '../../shared/localLibraryTags.ts'
 import {
   getTagWriteJournalRecoveryEntries,
+  probeTagWrite,
   readTagsFromFile,
   restoreTagsFromBackup,
   TagWriteBatchError,
@@ -52,6 +53,7 @@ export interface TagWriteIpcDependencies {
   ): Promise<TagWriteBatchOutcome>
   restoreFromBackup?(filePath: string, backupRoot: string): void
   readRecoveryEntries?(backupRoot: string): Array<{ filePath: string }>
+  probeWritable?(filePath: string): string | null
   readTags?(filePath: string, options: TagReadOptions): LocalLibraryTagSnapshot
   sendProgress?(event: unknown, progress: LocalLibraryTagWriteProgress): void
 }
@@ -62,6 +64,7 @@ export function createTagWriteIpcHandlers(
   const writeBatchAsync = dependencies.writeBatchAsync ?? writeTagsBatchWithRollbackAsync
   const restoreFromBackup = dependencies.restoreFromBackup ?? restoreTagsFromBackup
   const readRecoveryEntries = dependencies.readRecoveryEntries ?? getTagWriteJournalRecoveryEntries
+  const probeWritable = dependencies.probeWritable ?? probeTagWrite
   const readTags = dependencies.readTags ?? readTagsFromFile
   const activeOperations = new Map<string, { cancelled: boolean }>()
   let writeChain: Promise<unknown> = Promise.resolve()
@@ -114,35 +117,82 @@ export function createTagWriteIpcHandlers(
             })
           }
 
-          try {
-            const outcome = await writeBatchAsync(
-              authorization.items,
-              dependencies.backupRoot,
-              {
-                shouldCancel: () => operation.cancelled,
-                onProgress: (progress) => {
-                  dependencies.sendProgress?.(event, { operationId, ...progress })
-                }
-              }
-            )
+          const preflightFailures = new Map<number, string>()
+          const writableIndexes: number[] = []
+          for (const [index, item] of authorization.items.entries()) {
+            if (operation.cancelled) break
+            let failure: string | null
+            try {
+              failure = probeWritable(item.filePath)
+            } catch (error) {
+              failure = `无法检查文件是否可写：${dependencies.redactError(error)}`
+            }
+            if (failure) preflightFailures.set(index, dependencies.redactError(failure))
+            else writableIndexes.push(index)
+            await yieldToEventLoop()
+          }
+
+          if (operation.cancelled) {
             return withOperationId(request, operationId, {
-              items: outcome.entries.map((entry) => toWriteOperationResult(entry, dependencies)),
+              items: request.items.map((item) => notAttempted(item.filePath, '写入已取消')),
+              cancelled: true
+            })
+          }
+          if (writableIndexes.length === 0) {
+            return withOperationId(request, operationId, {
+              items: request.items.map((item, index) =>
+                failed(item.filePath, preflightFailures.get(index) ?? '文件不可写')
+              )
+            })
+          }
+
+          const writableItems = writableIndexes.map((index) => authorization.items[index])
+          const mergeResults = (
+            results: Map<number, LocalLibraryTagOperationResult>
+          ): LocalLibraryTagOperationResult[] =>
+            request.items.map(
+              (item, index) =>
+                results.get(index) ??
+                failed(item.filePath, preflightFailures.get(index) ?? '文件未写入')
+            )
+          try {
+            const outcome = await writeBatchAsync(writableItems, dependencies.backupRoot, {
+              shouldCancel: () => operation.cancelled,
+              onProgress: (progress) => {
+                dependencies.sendProgress?.(event, {
+                  operationId,
+                  current: progress.current + preflightFailures.size,
+                  total: request.items.length,
+                  filePath: progress.filePath
+                })
+              }
+            })
+            const results = new Map<number, LocalLibraryTagOperationResult>()
+            outcome.entries.forEach((entry, entryIndex) => {
+              results.set(writableIndexes[entryIndex], toWriteOperationResult(entry, dependencies))
+            })
+            return withOperationId(request, operationId, {
+              items: mergeResults(results),
               ...(outcome.cancelled ? { cancelled: true } : {})
             })
           } catch (error) {
             if (error instanceof TagWriteBatchError) {
+              const results = new Map<number, LocalLibraryTagOperationResult>()
+              error.journal.entries.forEach((entry, entryIndex) => {
+                results.set(writableIndexes[entryIndex], toWriteOperationResult(entry, dependencies))
+              })
               return withOperationId(request, operationId, {
-                items: error.journal.entries.map((entry) =>
-                  toWriteOperationResult(entry, dependencies)
-                )
+                items: mergeResults(results)
               })
             }
             return withOperationId(request, operationId, {
-              items: authorization.items.map((item) =>
-                notAttempted(
-                  item.filePath,
-                  `Batch journal could not be initialized: ${dependencies.redactError(error)}`
-                )
+              items: request.items.map((item, index) =>
+                preflightFailures.has(index)
+                  ? failed(item.filePath, preflightFailures.get(index) ?? '文件不可写')
+                  : notAttempted(
+                      item.filePath,
+                      `Batch journal could not be initialized: ${dependencies.redactError(error)}`
+                    )
               )
             })
           }

@@ -658,7 +658,7 @@ function batchSummaryText(): string {
   if (applied > 0) parts.push(`已自动写入 ${applied} 首`)
   if (review > 0) parts.push(`${review} 首需确认`)
   if (unmatched > 0) parts.push(`${unmatched} 首未找到匹配`)
-  if (failed > 0) parts.push(`${failed} 首匹配失败`)
+  if (failed > 0) parts.push(`${failed} 首失败`)
   return parts.length > 0 ? `${parts.join(' · ')}。` : '没有需要处理的歌曲。'
 }
 

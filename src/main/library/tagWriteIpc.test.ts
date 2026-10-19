@@ -226,7 +226,7 @@ test('tag IPC cancels a queued write before it starts', async () => {
   }
 })
 
-test('tag IPC rejects an over-limit PNG, unauthorized paths, and reports a real batch rollback per file', async () => {
+test('tag IPC rejects an over-limit PNG, skips an unparseable file, and rejects unauthorized paths', async () => {
   const fixture = createFixture()
   try {
     writeTags(fixture.audioFile, 'Before', 'Original Artist')
@@ -256,28 +256,29 @@ test('tag IPC rejects an over-limit PNG, unauthorized paths, and reports a real 
       /dimensions exceed/
     )
 
-    const rollbackResult = await handlers.write(event, {
+    const preflightResult = await handlers.write(event, {
       items: [
-        { filePath: fixture.audioFile, title: 'Must Roll Back' },
+        { filePath: fixture.audioFile, title: 'Written After Preflight' },
         { filePath: fixture.invalidAudioFile, title: 'Invalid Fixture' }
       ]
     })
     assert.deepEqual(
-      rollbackResult.items.map((item) => item.status),
-      ['rolledBack', 'rolledBack']
+      preflightResult.items.map((item) => item.status),
+      ['success', 'failed']
     )
-    assert.deepEqual(structuredClone(rollbackResult), rollbackResult)
+    assert.match(preflightResult.items[1].message ?? '', /无法解析文件标签/)
+    assert.deepEqual(structuredClone(preflightResult), preflightResult)
     assert.deepEqual(readTags(fixture.audioFile), {
-      title: 'Before',
+      title: 'Written After Preflight',
       artist: 'Original Artist',
       track: 0,
       coverMime: null
     })
-    const rollbackJournal = readTagWriteJournal(fixture.backupRoot)
-    assert.equal(rollbackJournal.state, 'rolledBack')
+    const completedJournal = readTagWriteJournal(fixture.backupRoot)
+    assert.equal(completedJournal.state, 'completed')
     assert.deepEqual(
-      rollbackJournal.entries.map((entry) => entry.status),
-      ['rolledBack', 'rolledBack']
+      completedJournal.entries.map((entry) => entry.status),
+      ['written']
     )
 
     const deniedPath = join(fixture.directory, 'outside.wav')
@@ -300,6 +301,47 @@ test('tag IPC rejects an over-limit PNG, unauthorized paths, and reports a real 
       }
     ])
     assert.deepEqual(structuredClone(deniedResult), deniedResult)
+  } finally {
+    fixture.dispose()
+  }
+})
+
+test('tag IPC still rolls back the batch when a write fails after preflight', async () => {
+  const fixture = createFixture()
+  try {
+    writeTags(fixture.audioFile, 'Before', 'Original Artist')
+    writeFileSync(fixture.invalidAudioFile, 'not a WAV file')
+    const event = { sender: 'trusted-renderer' }
+    const handlers = createTagWriteIpcHandlers({
+      backupRoot: fixture.backupRoot,
+      assertTrustedSender: () => {},
+      authorizeAudioFile: async (filePath) => filePath,
+      redactError: errorMessage,
+      probeWritable: () => null
+    })
+
+    const result = await handlers.write(event, {
+      items: [
+        { filePath: fixture.audioFile, title: 'Must Roll Back' },
+        { filePath: fixture.invalidAudioFile, title: 'Invalid Fixture' }
+      ]
+    })
+    assert.deepEqual(
+      result.items.map((item) => item.status),
+      ['rolledBack', 'rolledBack']
+    )
+    assert.deepEqual(readTags(fixture.audioFile), {
+      title: 'Before',
+      artist: 'Original Artist',
+      track: 0,
+      coverMime: null
+    })
+    const journal = readTagWriteJournal(fixture.backupRoot)
+    assert.equal(journal.state, 'rolledBack')
+    assert.deepEqual(
+      journal.entries.map((entry) => entry.status),
+      ['rolledBack', 'rolledBack']
+    )
   } finally {
     fixture.dispose()
   }
