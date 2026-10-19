@@ -548,6 +548,10 @@ interface WindowAPI {
     getCover: (handle: string) => Promise<Uint8Array | string | null>
     cacheCover: (data: ArrayBuffer | Uint8Array) => Promise<string | null>
     grantRemoteCover: (source: string) => Promise<string>
+    readCoverBytes: (
+      handle: string,
+      source?: string | null
+    ) => Promise<{ data: Uint8Array; mimeType: 'image/jpeg' | 'image/png' } | null>
     getLyrics: (dir: string, fileName: string, filePath?: string) => Promise<string | null>
     getTranslatedLyrics: (
       dir: string,

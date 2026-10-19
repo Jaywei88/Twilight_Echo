@@ -57,6 +57,11 @@ export const dataApi = {
     ipcRenderer.invoke('cover:cache', data),
   grantRemoteCover: (source: string): Promise<string> =>
     ipcRenderer.invoke('cover:grantRemote', source),
+  readCoverBytes: (
+    handle: string,
+    source?: string | null
+  ): Promise<{ data: Uint8Array; mimeType: 'image/jpeg' | 'image/png' } | null> =>
+    ipcRenderer.invoke('cover:readBytes', { handle, source }),
   getLyrics: (dir: string, fileName: string, filePath?: string): Promise<string | null> =>
     ipcRenderer.invoke('lyrics:get', dir, fileName, filePath),
   getTranslatedLyrics: (dir: string, fileName: string, filePath?: string): Promise<string | null> =>

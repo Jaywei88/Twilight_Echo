@@ -1,8 +1,14 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import CoverImg from '@renderer/components/CoverImg.vue'
+import { formatDuration } from '@renderer/components/song-list/formatDuration'
+import { syncPluginProviders, useMediaProviders } from '@renderer/providers'
 import { useMusicStore } from '@renderer/stores/useMusicStore'
 import type { Track } from '@renderer/types/music'
+import {
+  buildMetadataMatchCandidates,
+  type MetadataMatchCandidate
+} from '@renderer/utils/musicMetadataMatching'
 import {
   hasTagPatch,
   successfulTagPaths,
@@ -61,6 +67,7 @@ const NUMERIC_FIELDS = new Set<FieldKey>(['track', 'trackCount', 'disc', 'discCo
 const PAGE_SIZE = 100
 
 const musicStore = useMusicStore()
+const mediaProviders = useMediaProviders()
 const query = ref('')
 const page = ref(1)
 const selectedIds = ref(new Set<string>())
@@ -122,6 +129,17 @@ const restoreArmed = ref(false)
 const restoring = ref(false)
 let removeProgressListener: (() => void) | undefined
 let readRequest = 0
+
+const matchQuery = ref('')
+const matching = ref(false)
+const matchSearched = ref(false)
+const matchError = ref('')
+const matchNotice = ref('')
+const matchCandidates = shallowRef<MetadataMatchCandidate[]>([])
+const applyingCoverKey = ref('')
+const applyingLyricsKey = ref('')
+let matchRequest = 0
+let matchAbort: AbortController | null = null
 
 const resultSummary = computed(() => summarizeTagWriteResults(results.value))
 const failedResults = computed(() =>
@@ -188,11 +206,26 @@ function resetEditor(): void {
   Object.assign(fieldValues, blankValues())
   Object.assign(fieldIncluded, blankIncluded())
   resetCover()
+  resetMatch()
   readError.value = ''
   formError.value = ''
   results.value = []
   progress.value = null
   restoreArmed.value = false
+}
+
+function resetMatch(): void {
+  matchAbort?.abort()
+  matchAbort = null
+  matchRequest += 1
+  matching.value = false
+  matchSearched.value = false
+  matchError.value = ''
+  matchNotice.value = ''
+  matchCandidates.value = []
+  applyingCoverKey.value = ''
+  applyingLyricsKey.value = ''
+  matchQuery.value = ''
 }
 
 function resetCover(): void {
@@ -220,6 +253,7 @@ async function loadSelectedSnapshot(): Promise<void> {
   const track = singleTrack.value
   resetEditor()
   if (!track) return
+  matchQuery.value = [track.title, track.artist].filter(Boolean).join(' ')
   const request = ++readRequest
   reading.value = true
   try {
@@ -335,6 +369,154 @@ function removeCover(): void {
   coverError.value = ''
 }
 
+function candidateKey(candidate: MetadataMatchCandidate): string {
+  return `${candidate.providerId}:${candidate.track.id}`
+}
+
+async function searchOnlineMatches(): Promise<void> {
+  const track = singleTrack.value
+  if (!track || busy.value || matching.value) return
+  const keyword = matchQuery.value.trim() || [track.title, track.artist].filter(Boolean).join(' ')
+  if (!keyword) return
+  matchAbort?.abort()
+  const controller = new AbortController()
+  matchAbort = controller
+  const request = ++matchRequest
+  matching.value = true
+  matchError.value = ''
+  matchNotice.value = ''
+  matchSearched.value = false
+  matchCandidates.value = []
+  try {
+    await syncPluginProviders()
+    const result = await mediaProviders.searchAllSongs({
+      query: keyword,
+      localTracks: [],
+      limit: 40,
+      offset: 0,
+      signal: controller.signal
+    })
+    if (request !== matchRequest) return
+    const candidates = buildMetadataMatchCandidates(
+      track,
+      result.items.map((item) => item.track)
+    )
+    matchCandidates.value = candidates.slice(0, 30)
+    matchSearched.value = true
+    if (candidates.length === 0) matchNotice.value = '没有找到标题与艺术家都可信的在线匹配'
+  } catch (error) {
+    if (request !== matchRequest || controller.signal.aborted) return
+    matchError.value = error instanceof Error ? error.message : '在线匹配失败'
+  } finally {
+    if (request === matchRequest) {
+      matching.value = false
+      matchAbort = null
+    }
+  }
+}
+
+function applyCandidateMetadata(candidate: MetadataMatchCandidate): void {
+  if (busy.value) return
+  const source = candidate.track
+  let applied = 0
+  const textFields: Array<[FieldKey, string | null | undefined]> = [
+    ['title', source.title],
+    ['artist', source.artist],
+    ['album', source.album],
+    ['albumArtist', source.albumArtist],
+    ['genre', source.genre ?? undefined]
+  ]
+  for (const [key, value] of textFields) {
+    const text = (value ?? '').trim()
+    if (!text) continue
+    fieldValues[key] = text
+    fieldIncluded[key] = true
+    applied += 1
+  }
+  const numericFields: Array<[FieldKey, number | undefined]> = [
+    ['track', source.trackNumber],
+    ['disc', source.discNumber]
+  ]
+  for (const [key, value] of numericFields) {
+    if (!Number.isInteger(value) || !value || value <= 0) continue
+    fieldValues[key] = String(value)
+    fieldIncluded[key] = true
+    applied += 1
+  }
+  const year = Number(source.releaseDate?.slice(0, 4) ?? '')
+  if (Number.isInteger(year) && year > 0) {
+    fieldValues.year = String(year)
+    fieldIncluded.year = true
+    applied += 1
+  }
+  matchNotice.value =
+    applied > 0
+      ? `已从 ${candidate.sourceLabel} 填入 ${applied} 个字段，确认后点击写入。`
+      : '这条匹配没有可用的元数据字段'
+}
+
+async function applyCandidateCover(candidate: MetadataMatchCandidate): Promise<void> {
+  if (busy.value) return
+  if (!candidate.track.cover) {
+    matchError.value = '这条匹配没有可用的封面'
+    return
+  }
+  const key = candidateKey(candidate)
+  applyingCoverKey.value = key
+  matchError.value = ''
+  matchNotice.value = ''
+  try {
+    const cover = await window.api.data.readCoverBytes(
+      candidate.track.cover ?? '',
+      candidate.track.coverSource
+    )
+    if (!cover) throw new Error('无法获取这张封面，可能是不受支持的图片格式')
+    coverDraft.value = cover.data
+    coverDirty.value = true
+    coverPreview.value = bytesToDataUrl(cover.data, cover.mimeType)
+    coverError.value = ''
+    matchNotice.value = `已使用 ${candidate.sourceLabel} 封面，确认后点击写入。`
+  } catch (error) {
+    matchError.value = error instanceof Error ? error.message : '无法获取在线封面'
+  } finally {
+    if (applyingCoverKey.value === key) applyingCoverKey.value = ''
+  }
+}
+
+async function applyCandidateLyrics(candidate: MetadataMatchCandidate): Promise<void> {
+  if (busy.value) return
+  const key = candidateKey(candidate)
+  applyingLyricsKey.value = key
+  matchError.value = ''
+  matchNotice.value = ''
+  try {
+    const lyrics = await mediaProviders.resolveLyrics(candidate.track, { timeoutMs: 12_000 })
+    const text = lyrics.lyrics || lyrics.translatedLyrics || lyrics.wordLyrics || ''
+    if (!text.trim()) throw new Error('音源没有返回可用歌词')
+    fieldValues.lyrics = text
+    fieldIncluded.lyrics = true
+    matchNotice.value = `已获取 ${candidate.sourceLabel} 歌词，确认后点击写入。`
+  } catch (error) {
+    matchError.value = error instanceof Error ? error.message : '无法获取在线歌词'
+  } finally {
+    if (applyingLyricsKey.value === key) applyingLyricsKey.value = ''
+  }
+}
+
+async function applyCandidateAll(candidate: MetadataMatchCandidate): Promise<void> {
+  if (busy.value) return
+  applyCandidateMetadata(candidate)
+  const metadataNotice = matchNotice.value
+  const tasks: Array<Promise<void>> = [applyCandidateLyrics(candidate)]
+  if (candidate.track.cover) tasks.push(applyCandidateCover(candidate))
+  await Promise.all(tasks)
+  if (!matchError.value) {
+    matchNotice.value = `已从 ${candidate.sourceLabel} 填入在线资料，确认后点击写入。`
+  } else {
+    matchNotice.value = metadataNotice
+  }
+}
+
 async function writeSelected(): Promise<void> {
   const built = buildPatch()
   if (built.error) {
@@ -362,6 +544,15 @@ async function writeSelected(): Promise<void> {
     const currentSuccessful = successful.filter((path) => currentPaths.has(tagWritePathKey(path)))
     if (currentSuccessful.length > 0) {
       musicStore.applyLocalTagWrite(currentSuccessful, built.patch)
+      if (built.patch.coverData !== undefined) {
+        const handle = built.patch.coverData
+          ? await window.api.data.cacheCover(built.patch.coverData).catch(() => null)
+          : null
+        musicStore.applyLocalCover(currentSuccessful, handle)
+        if (built.patch.coverData && !handle) {
+          formError.value = '封面已写入文件，但曲库缩略图更新失败'
+        }
+      }
     }
     if (result.cancelled) {
       notice.value = `写入已取消，已完成 ${successful.length} 首。`
@@ -535,6 +726,93 @@ onBeforeUnmount(() => {
             <span v-if="reading" class="tag-workshop-reading" role="status">读取文件中…</span>
           </header>
           <p v-if="readError" class="tag-workshop-alert" role="alert">{{ readError }}</p>
+
+          <section v-if="singleTrack" class="tag-workshop-match" aria-label="在线匹配">
+            <header>
+              <div>
+                <strong>在线匹配</strong>
+                <small>按标题与艺术家从已启用的音源查找元数据、封面与歌词</small>
+              </div>
+              <div class="tag-workshop-match-search">
+                <input
+                  v-model="matchQuery"
+                  type="search"
+                  aria-label="在线匹配关键词"
+                  placeholder="标题 艺术家"
+                  :disabled="matching || busy"
+                  @keydown.enter.prevent="searchOnlineMatches"
+                />
+                <button type="button" :disabled="matching || busy" @click="searchOnlineMatches">
+                  {{ matching ? '匹配中…' : '搜索' }}
+                </button>
+              </div>
+            </header>
+            <p v-if="matchError" class="tag-workshop-alert" role="alert">{{ matchError }}</p>
+            <p v-else-if="matchNotice" class="tag-workshop-notice" role="status">
+              {{ matchNotice }}
+            </p>
+            <p v-if="!matchSearched && !matching" class="tag-workshop-hint">
+              搜索后可将候选的字段、封面和歌词填入下方编辑器，确认无误后再写入文件。
+            </p>
+            <ul v-if="matchCandidates.length > 0" class="tag-workshop-match-list">
+              <li v-for="candidate in matchCandidates" :key="candidateKey(candidate)">
+                <CoverImg
+                  class="tag-workshop-match-cover"
+                  :cover="candidate.track.cover"
+                  :cover-source="candidate.track.coverSource"
+                  :identity="candidate.track.id"
+                  :alt="`${candidate.track.title} 匹配封面`"
+                />
+                <div class="tag-workshop-match-meta">
+                  <strong>{{ candidate.track.title }}</strong>
+                  <small>
+                    {{ candidate.track.artist }} · {{ candidate.track.album || '未知专辑' }}
+                    <template v-if="candidate.track.duration > 0">
+                      · {{ formatDuration(candidate.track.duration) }}
+                    </template>
+                  </small>
+                  <div class="tag-workshop-match-badges">
+                    <span>{{ candidate.sourceLabel }}</span>
+                    <span>{{ candidate.confidence === 'high' ? '高置信' : '中置信' }}</span>
+                    <span v-if="candidate.fills.cover">封面</span>
+                    <span v-if="candidate.fills.lyrics">歌词</span>
+                    <span v-if="candidate.fills.metadata">补全元数据</span>
+                  </div>
+                </div>
+                <div class="tag-workshop-match-actions">
+                  <button type="button" :disabled="busy" @click="applyCandidateMetadata(candidate)">
+                    填入字段
+                  </button>
+                  <button
+                    type="button"
+                    :disabled="busy || !candidate.track.cover || Boolean(applyingCoverKey)"
+                    @click="applyCandidateCover(candidate)"
+                  >
+                    {{
+                      applyingCoverKey === candidateKey(candidate) ? '获取中…' : '使用封面'
+                    }}
+                  </button>
+                  <button
+                    type="button"
+                    :disabled="busy || Boolean(applyingLyricsKey)"
+                    @click="applyCandidateLyrics(candidate)"
+                  >
+                    {{
+                      applyingLyricsKey === candidateKey(candidate) ? '获取中…' : '使用歌词'
+                    }}
+                  </button>
+                  <button
+                    type="button"
+                    class="tag-workshop-match-all"
+                    :disabled="busy || Boolean(applyingCoverKey) || Boolean(applyingLyricsKey)"
+                    @click="applyCandidateAll(candidate)"
+                  >
+                    全部填入
+                  </button>
+                </div>
+              </li>
+            </ul>
+          </section>
 
           <div class="tag-workshop-fields">
             <div

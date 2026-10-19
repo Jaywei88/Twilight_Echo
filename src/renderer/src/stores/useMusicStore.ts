@@ -703,6 +703,29 @@ export function useMusicStore() {
     return changed
   }
 
+  function applyLocalCover(filePaths: readonly string[], cover: string | null): number {
+    const paths = new Set(filePaths.map(normalizePortableLibraryPath))
+    if (paths.size === 0) return 0
+    let changed = 0
+    const nextTracks = tracks.value.map((track) => {
+      if (!paths.has(normalizePortableLibraryPath(track.filePath))) return track
+      if (track.cover === cover && !track.coverSource && !track.coverSmall) return track
+      changed++
+      return {
+        ...track,
+        cover,
+        coverSource: null,
+        coverSmall: null,
+        coverSmallSource: null
+      }
+    })
+    if (changed === 0) return 0
+    setTracks(nextTracks, { rebuildIndexes: false })
+    scheduleRebuild()
+    void scheduleSaveLibrary()
+    return changed
+  }
+
   function applyLocalRemovalDelta(result: LocalLibraryRemoveResult): void {
     const removedIds = new Set(result.removedTrackIds)
     const removedPaths = new Set(result.removedFilePaths.map(normalizePortableLibraryPath))
@@ -1126,6 +1149,7 @@ export function useMusicStore() {
     restoreExcludedTracks,
     clearExcludedTracks,
     applyLocalTagWrite,
+    applyLocalCover,
     clearTrackMetadataMatch,
     applyTrackMetadataMatch,
     clearTracks,
