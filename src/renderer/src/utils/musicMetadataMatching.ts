@@ -50,11 +50,20 @@ export function buildMetadataSearchQueries(track: Track): string[] {
   const title = track.title.normalize('NFKC').trim().replace(/\s+/g, ' ')
   if (!title) return []
   const artists = metadataArtistNames(track.artist)
+  const album = (track.album ?? '').normalize('NFKC').trim().replace(/\s+/g, ' ')
   const queries = [
     [title, ...artists].join(' '),
     [title, artists[0]].filter(Boolean).join(' '),
     title
   ]
+  // MusicTag 的第三条搜索条件是「专辑 + 艺术家」：标题被写成文件名、
+  // 版本名或翻译名时，标题搜索会扑空，专辑信息仍能把曲目捞回来。
+  if (
+    !isMetadataPlaceholder(album) &&
+    normalizeMetadataText(album) !== normalizeMetadataText(title)
+  ) {
+    queries.push([album, ...artists].join(' '))
+  }
   const seen = new Set<string>()
   return queries.filter((query) => {
     const key = normalizeMetadataText(query)

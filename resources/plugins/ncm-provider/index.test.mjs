@@ -1335,6 +1335,46 @@ test('search song normalization preserves tempo and artist/album navigation iden
   }
 })
 
+test('song search uses the web weapi path and reuses identical successful queries', async () => {
+  let calls = 0
+  const provider = await activateProvider(async (path) => {
+    const url = parseRequest(path)
+    assert.equal(url.pathname, '/cloudsearch')
+    assert.equal(url.searchParams.get('type'), '1')
+    assert.equal(url.searchParams.get('crypto'), 'weapi')
+    calls += 1
+    return { result: { songs: [song(42)], songCount: 1 } }
+  })
+
+  try {
+    const first = await provider.searchSongs('moon river', 15)
+    const cached = await provider.searchSongs('moon river', 15)
+    assert.equal(calls, 1)
+    assert.equal(cached, first)
+    await provider.searchSongs('moon river', 10)
+    await provider.searchSongs('other query', 15)
+    assert.equal(calls, 3, 'different limits or keywords stay distinct cache entries')
+  } finally {
+    ncmProvider.deactivate()
+  }
+})
+
+test('empty song searches are never cached as successful results', async () => {
+  let calls = 0
+  const provider = await activateProvider(async () => {
+    calls += 1
+    return { result: { songs: [], songCount: 0 } }
+  })
+
+  try {
+    await provider.searchSongs('missing song')
+    await provider.searchSongs('missing song')
+    assert.equal(calls, 2)
+  } finally {
+    ncmProvider.deactivate()
+  }
+})
+
 test('cloud songs page preserves separate cloud and playback song identifiers', async () => {
   const requests = []
   const provider = await activateProvider(async (path) => {

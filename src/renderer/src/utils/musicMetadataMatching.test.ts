@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-const { buildMetadataMatchCandidates, findBestMetadataMatch, enrichLocalTrackMetadata } =
-  (await import(
-    new URL('./musicMetadataMatching.ts', import.meta.url).href
-  )) as typeof import('./musicMetadataMatching')
+const {
+  buildMetadataMatchCandidates,
+  buildMetadataSearchQueries,
+  findBestMetadataMatch,
+  enrichLocalTrackMetadata
+} = (await import(
+  new URL('./musicMetadataMatching.ts', import.meta.url).href
+)) as typeof import('./musicMetadataMatching')
 
 const localTrack = {
   id: 'local:abc',
@@ -99,6 +103,26 @@ test('findBestMetadataMatch normalizes spacing around artist separators', () => 
 
   assert.equal(match?.track.id, 'ncm:1939672461')
   assert.equal(match?.confidence, 'high')
+})
+
+test('search queries fall back to album + artist only when the album adds identity', () => {
+  assert.deepEqual(buildMetadataSearchQueries(localTrack), [
+    'Moon River Audrey',
+    'Moon River',
+    'Local Album Audrey'
+  ])
+  assert.deepEqual(buildMetadataSearchQueries({ ...localTrack, album: 'Unknown Album' }), [
+    'Moon River Audrey',
+    'Moon River'
+  ])
+  assert.deepEqual(buildMetadataSearchQueries({ ...localTrack, album: localTrack.title }), [
+    'Moon River Audrey',
+    'Moon River'
+  ])
+  assert.deepEqual(buildMetadataSearchQueries({ ...localTrack, artist: '' }), [
+    'Moon River',
+    'Local Album'
+  ])
 })
 
 test('metadata matching recognizes the same artist credits across separators and order', () => {

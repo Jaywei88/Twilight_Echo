@@ -2,11 +2,14 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { MetadataMatchCandidate } from './musicMetadataMatching.ts'
 import {
+  BATCH_MATCH_CANDIDATE_LIMIT,
   BATCH_MATCH_CONCURRENCY,
+  BATCH_MATCH_RATE_LIMIT_STREAK,
   buildMatchedTagPatch,
   DEFAULT_TAG_MATCH_FIELDS,
   forEachWithConcurrency,
   hasMatchedTagPatch,
+  mergeMetadataMatchCandidates,
   shouldAutoApplyMatch,
   type TagMatchField
 } from './tagWorkshopBatchMatch.ts'
@@ -96,6 +99,38 @@ test('high-confidence and strong medium matches apply without confirmation', () 
   assert.equal(shouldAutoApplyMatch(candidate()), true)
   assert.equal(shouldAutoApplyMatch({ ...candidate(), confidence: 'medium', score: 81 }), true)
   assert.equal(shouldAutoApplyMatch({ ...candidate(), confidence: 'medium', score: 79 }), false)
+})
+
+test('fallback queries merge candidates, dedupe providers and keep the best scores', () => {
+  const first = { ...candidate({ id: 'ncm:1' }), score: 74 }
+  const second = { ...candidate({ id: 'ncm:2' }), score: 92 }
+  const duplicate = { ...candidate({ id: 'ncm:2' }), score: 99 }
+  const other = { ...candidate({ id: 'kugou:3' }), providerId: 'kugou', score: 88 }
+
+  const merged = mergeMetadataMatchCandidates([first, second], [duplicate, other])
+
+  assert.deepEqual(
+    merged.map((entry) => entry.track.id),
+    ['ncm:2', 'kugou:3', 'ncm:1']
+  )
+  assert.equal(merged[0].score, 92, 'the first occurrence of a provider track wins')
+  assert.equal(merged.length, 3)
+})
+
+test('merged candidate lists are capped for the review dialog', () => {
+  const many = Array.from({ length: 12 }, (_, index) => ({
+    ...candidate({ id: `ncm:${index}` }),
+    score: 70 + index
+  }))
+
+  const capped = mergeMetadataMatchCandidates([], many)
+
+  assert.equal(capped.length, BATCH_MATCH_CANDIDATE_LIMIT)
+  assert.deepEqual(
+    capped.map((entry) => entry.score),
+    [81, 80, 79, 78, 77, 76, 75, 74]
+  )
+  assert.equal(BATCH_MATCH_RATE_LIMIT_STREAK, 6)
 })
 
 test('default batch match selection covers common metadata, cover and lyrics', () => {

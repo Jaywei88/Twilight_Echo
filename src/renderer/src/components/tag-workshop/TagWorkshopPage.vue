@@ -15,10 +15,12 @@ import {
 import type { UnifiedSearchResult } from '@renderer/utils/unifiedMusicSearch'
 import {
   BATCH_MATCH_CONCURRENCY,
+  BATCH_MATCH_RATE_LIMIT_STREAK,
   buildMatchedTagPatch,
   DEFAULT_TAG_MATCH_FIELDS,
   forEachWithConcurrency,
   hasMatchedTagPatch,
+  mergeMetadataMatchCandidates,
   shouldAutoApplyMatch,
   TAG_MATCH_FIELD_DEFINITIONS,
   type TagMatchField
@@ -658,10 +660,11 @@ async function buildPatchForMatch(
 }
 
 function searchRateLimitMessage(search: UnifiedSearchResult): string {
-  const rateLimited = Object.values(search.health).some((health) =>
-    /405|操作频繁|风控|rate.?limit/i.test(health.lastError ?? '')
+  const rateLimited = Object.values(search.health).some(
+    (health) =>
+      !health.available && /405|操作频繁|风控|rate.?limit/i.test(health.lastError ?? '')
   )
-  return rateLimited ? '网易云搜索触发风控（操作频繁），请稍后重试' : ''
+  return rateLimited ? '网易云搜索触发风控（操作频繁）' : ''
 }
 
 function batchSummaryText(): string {
@@ -702,6 +705,37 @@ async function runBatchMatch(): Promise<void> {
   batchMatchNotice.value = ''
   const slots: Array<BatchMatchTrackResult | undefined> = new Array(tracks.length)
   let searched = 0
+  let rateLimitStreak = 0
+  let rateLimitTripped = false
+  const searchCache = new Map<string, Promise<UnifiedSearchResult>>()
+  const searchBatchQuery = (query: string): Promise<UnifiedSearchResult> => {
+    const key = query.normalize('NFKC').trim().toLowerCase()
+    const cached = searchCache.get(key)
+    if (cached) return cached
+    const request = mediaProviders.searchAllSongs({
+      query,
+      localTracks: [],
+      limit: 20,
+      offset: 0,
+      signal: controller.signal
+    })
+    searchCache.set(key, request)
+    // 只合并同一时刻发出的相同查询（500 首里大量同专辑回退）；请求结束
+    // 立即释放，后续歌曲仍能在风控冷却后重新搜索。
+    const release = (): void => {
+      if (searchCache.get(key) === request) searchCache.delete(key)
+    }
+    void request.then(release, release)
+    return request
+  }
+  const noteRateLimitedSearch = (): void => {
+    rateLimitStreak += 1
+    if (rateLimitTripped || rateLimitStreak < BATCH_MATCH_RATE_LIMIT_STREAK) return
+    rateLimitTripped = true
+    batchMatchError.value =
+      '网易云搜索连续触发风控（操作频繁），已停止本轮匹配；稍后重试或登录网易云后再试。'
+    controller.abort()
+  }
   try {
     await syncPluginProviders()
     if (run !== batchMatchRun) return
@@ -725,26 +759,29 @@ async function runBatchMatch(): Promise<void> {
           let candidates: MetadataMatchCandidate[] = []
           let rateLimitMessage = ''
           for (const searchQuery of searchQueries) {
-            const search = await mediaProviders.searchAllSongs({
-              query: searchQuery,
-              localTracks: [],
-              limit: 20,
-              offset: 0,
-              signal: controller.signal
-            })
+            // 已经找到可自动应用的候选就不再消耗回退查询。
+            if (candidates.some(shouldAutoApplyMatch)) break
+            const search = await searchBatchQuery(searchQuery)
             if (controller.signal.aborted || run !== batchMatchRun) return
-            candidates = buildMetadataMatchCandidates(
-              track,
-              search.items.map((item) => item.track)
-            ).slice(0, 8)
-            if (candidates.length > 0) break
-            rateLimitMessage = searchRateLimitMessage(search)
-            // 风控期间继续回退查询只会放大封锁，等冷却结束后再重试。
-            if (rateLimitMessage) break
+            candidates = mergeMetadataMatchCandidates(
+              candidates,
+              buildMetadataMatchCandidates(
+                track,
+                search.items.map((item) => item.track)
+              )
+            )
+            const message = searchRateLimitMessage(search)
+            if (message) {
+              rateLimitMessage = message
+              noteRateLimitedSearch()
+              // 风控期间继续回退查询只会放大封锁，等冷却结束后再重试。
+              break
+            }
+            rateLimitStreak = 0
           }
           if (candidates.length === 0) {
             slots[index] = rateLimitMessage
-              ? { ...base, status: 'failed', message: rateLimitMessage }
+              ? { ...base, status: 'failed', message: `${rateLimitMessage}，请稍后重试` }
               : { ...base, status: 'noMatch' }
             return
           }
@@ -812,7 +849,9 @@ async function runBatchMatch(): Promise<void> {
     batchResults.value = slots.filter((entry): entry is BatchMatchTrackResult => Boolean(entry))
     batchMatchDone.value = true
     if (controller.signal.aborted) {
-      batchMatchNotice.value = `匹配已停止，已完成 ${batchResults.value.length} / ${tracks.length} 首。`
+      if (!rateLimitTripped) {
+        batchMatchNotice.value = `匹配已停止，已完成 ${batchResults.value.length} / ${tracks.length} 首。`
+      }
       return
     }
     const pendingEntries = batchResults.value.filter((entry) => entry.status === 'pending')

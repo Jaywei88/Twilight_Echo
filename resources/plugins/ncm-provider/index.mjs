@@ -238,6 +238,7 @@ function resetCaches() {
   requestTokenRefillAt = Date.now()
   rateLimitCooldownMs = 0
   rateLimitResumeAt = 0
+  searchResultCache.clear()
 }
 
 function runIdempotentProviderWrite(scope, args, requestContext, operation, replaySuccess) {
@@ -400,15 +401,22 @@ const REQUEST_TOKEN_REFILL_PER_MS = 5 / 1000
 let requestTokenCount = REQUEST_TOKEN_BUCKET_CAPACITY
 let requestTokenRefillAt = Date.now()
 let requestTokenTail = Promise.resolve()
-// 网易云对 /cloudsearch 的风控会返回 HTTP/code 405「操作频繁」。命中后暂停
-// 所有上游请求并指数退避：并发的 12 个搜索同时撞上只会共享一次冷却窗口。
+// 网易云对搜索的风控会返回 HTTP/code 405「操作频繁」。命中后暂停所有上游
+// 请求并指数退避：并发的 12 个搜索同时撞上只会共享一次冷却窗口。只重试一次，
+// 避免重试风暴把短暂的限流放大成整批失败。
 const RATE_LIMIT_MESSAGE_PATTERN =
   /操作频繁|请求过于频繁|too many requests|too frequent|rate.?limit/i
 const RATE_LIMIT_COOLDOWN_BASE_MS = 5_000
 const RATE_LIMIT_COOLDOWN_MAX_MS = 30_000
-const SEARCH_READ_ATTEMPTS = 5
+const SEARCH_READ_ATTEMPTS = 2
 let rateLimitCooldownMs = 0
 let rateLimitResumeAt = 0
+
+// 同一批 500 首里专辑回退查询会反复命中相同关键词。结果缓存能显著减少
+// 上游请求，也避免用户重跑时再次触发风控。
+const SEARCH_RESULT_CACHE_TTL_MS = 10 * 60_000
+const SEARCH_RESULT_CACHE_CAPACITY = 200
+const searchResultCache = new Map()
 
 function acquireRequestToken(signal) {
   const acquire = requestTokenTail.then(
@@ -454,7 +462,9 @@ function acquireRequestToken(signal) {
 
 function apiResponseCode(data) {
   if (!data || typeof data !== 'object') return null
-  const code = Number(data.code ?? data.body?.code)
+  const raw = data.code ?? data.body?.code
+  if (raw == null) return null
+  const code = Number(raw)
   return Number.isFinite(code) ? code : null
 }
 
@@ -2343,8 +2353,16 @@ async function getLyrics(track, requestContext) {
 }
 
 async function searchSongs(keywords, limit = 30, offset = 0, requestContext) {
+  throwIfRequestAborted(requestContext)
+  const cacheKey = `${keywords}\u0000${limit}\u0000${offset}`
+  const cached = searchResultCache.get(cacheKey)
+  if (cached && Date.now() - cached.at < SEARCH_RESULT_CACHE_TTL_MS) {
+    return cached.value
+  }
+  // MusicTag 的网易云来源走网页版 weapi/cloudsearch/pc；模块默认的 eapi
+  // （手机端搜索）在匿名高频时会更容易被 405 风控。
   const data = await requestOptionalAuthRead(
-    `/cloudsearch?keywords=${encodeURIComponent(keywords)}&type=1&limit=${limit}&offset=${offset}`,
+    `/cloudsearch?keywords=${encodeURIComponent(keywords)}&type=1&limit=${limit}&offset=${offset}&crypto=weapi`,
     {
       attempts: SEARCH_READ_ATTEMPTS,
       label: `search ${keywords}`,
@@ -2354,7 +2372,15 @@ async function searchSongs(keywords, limit = 30, offset = 0, requestContext) {
   const result = data.result || data.data?.result || {}
   const songs = Array.isArray(result.songs) ? result.songs : []
   const total = typeof result.songCount === 'number' ? result.songCount : songs.length
-  return { items: songs.map(normalizeTrack), total }
+  const value = { items: songs.map(normalizeTrack), total }
+  if (songs.length > 0) {
+    searchResultCache.delete(cacheKey)
+    searchResultCache.set(cacheKey, { at: Date.now(), value })
+    while (searchResultCache.size > SEARCH_RESULT_CACHE_CAPACITY) {
+      searchResultCache.delete(searchResultCache.keys().next().value)
+    }
+  }
+  return value
 }
 
 async function searchAlbums(keywords, limit = 30, offset = 0, requestContext) {
