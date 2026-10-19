@@ -12,9 +12,12 @@ import {
   buildMetadataSearchQueries,
   type MetadataMatchCandidate
 } from '@renderer/utils/musicMetadataMatching'
+import type { UnifiedSearchResult } from '@renderer/utils/unifiedMusicSearch'
 import {
+  BATCH_MATCH_CONCURRENCY,
   buildMatchedTagPatch,
   DEFAULT_TAG_MATCH_FIELDS,
+  forEachWithConcurrency,
   hasMatchedTagPatch,
   shouldAutoApplyMatch,
   TAG_MATCH_FIELD_DEFINITIONS,
@@ -139,7 +142,9 @@ const selectedTracks = computed(() =>
       return true
     })
 )
-const singleTrack = computed(() => (selectedTracks.value.length === 1 ? selectedTracks.value[0] : null))
+const singleTrack = computed(() =>
+  selectedTracks.value.length === 1 ? selectedTracks.value[0] : null
+)
 const hiddenCueCount = computed(
   () => musicStore.tracks.value.filter((track) => track.subTrack || track.cueRange).length
 )
@@ -211,10 +216,7 @@ let readRequest = 0
 
 const matchFieldIncluded = reactive(
   Object.fromEntries(
-    TAG_MATCH_FIELD_DEFINITIONS.map((field) => [
-      field.key,
-      DEFAULT_TAG_MATCH_FIELDS.has(field.key)
-    ])
+    TAG_MATCH_FIELD_DEFINITIONS.map((field) => [field.key, DEFAULT_TAG_MATCH_FIELDS.has(field.key)])
   ) as Record<TagMatchField, boolean>
 )
 const batchMatching = ref(false)
@@ -276,9 +278,7 @@ const progressFileName = computed(() => {
 const selectedMatchFields = computed(
   () =>
     new Set(
-      TAG_MATCH_FIELD_DEFINITIONS.map((field) => field.key).filter(
-        (key) => matchFieldIncluded[key]
-      )
+      TAG_MATCH_FIELD_DEFINITIONS.map((field) => field.key).filter((key) => matchFieldIncluded[key])
     )
 )
 const matchFieldCount = computed(() => selectedMatchFields.value.size)
@@ -451,14 +451,12 @@ function applySnapshot(tags: LocalLibraryTagSnapshot): void {
   coverDraft.value = undefined
   coverDirty.value = false
   coverPreview.value =
-    tags.coverData && tags.coverMimeType
-      ? bytesToDataUrl(tags.coverData, tags.coverMimeType)
-      : null
+    tags.coverData && tags.coverMimeType ? bytesToDataUrl(tags.coverData, tags.coverMimeType) : null
 }
 
-async function loadSelectedSnapshot(
-  { preserveMatchState = false }: { preserveMatchState?: boolean } = {}
-): Promise<void> {
+async function loadSelectedSnapshot({
+  preserveMatchState = false
+}: { preserveMatchState?: boolean } = {}): Promise<void> {
   const track = singleTrack.value
   if (!preserveMatchState) {
     resetEditor()
@@ -649,6 +647,13 @@ async function buildPatchForMatch(
   return buildMatchedTagPatch(candidate, fields, extras)
 }
 
+function searchRateLimitMessage(search: UnifiedSearchResult): string {
+  const rateLimited = Object.values(search.health).some((health) =>
+    /405|操作频繁|风控|rate.?limit/i.test(health.lastError ?? '')
+  )
+  return rateLimited ? '网易云搜索触发风控（操作频繁），请稍后重试' : ''
+}
+
 function batchSummaryText(): string {
   const applied = appliedEntries.value.length
   const review = reviewEntries.value.length
@@ -686,17 +691,15 @@ async function runBatchMatch(): Promise<void> {
   batchMatchError.value = ''
   batchMatchNotice.value = ''
   const slots: Array<BatchMatchTrackResult | undefined> = new Array(tracks.length)
-  let cursor = 0
-  let completed = 0
+  let searched = 0
   try {
     await syncPluginProviders()
     if (run !== batchMatchRun) return
-    const worker = async (): Promise<void> => {
-      while (!controller.signal.aborted && run === batchMatchRun) {
-        const index = cursor
-        cursor += 1
-        if (index >= tracks.length) return
-        const track = tracks[index]
+    await forEachWithConcurrency(
+      tracks,
+      BATCH_MATCH_CONCURRENCY,
+      async (track, index) => {
+        if (run !== batchMatchRun) return
         batchMatchProgress.label = trackFileName(track)
         const base: Omit<BatchMatchTrackResult, 'status'> = {
           trackId: track.id,
@@ -710,6 +713,7 @@ async function runBatchMatch(): Promise<void> {
           const searchQueries = buildMetadataSearchQueries(track)
           if (searchQueries.length === 0) throw new Error('缺少可搜索的标题')
           let candidates: MetadataMatchCandidate[] = []
+          let rateLimitMessage = ''
           for (const searchQuery of searchQueries) {
             const search = await mediaProviders.searchAllSongs({
               query: searchQuery,
@@ -724,34 +728,20 @@ async function runBatchMatch(): Promise<void> {
               search.items.map((item) => item.track)
             ).slice(0, 8)
             if (candidates.length > 0) break
+            rateLimitMessage = searchRateLimitMessage(search)
+            // 风控期间继续回退查询只会放大封锁，等冷却结束后再重试。
+            if (rateLimitMessage) break
           }
           if (candidates.length === 0) {
-            slots[index] = { ...base, status: 'noMatch' }
-            continue
+            slots[index] = rateLimitMessage
+              ? { ...base, status: 'failed', message: rateLimitMessage }
+              : { ...base, status: 'noMatch' }
+            return
           }
           const top = candidates[0]
-          if (shouldAutoApplyMatch(top)) {
-            const patch = await buildPatchForMatch(top, fields, controller.signal)
-            if (controller.signal.aborted || run !== batchMatchRun) return
-            if (hasMatchedTagPatch(patch)) {
-              slots[index] = {
-                ...base,
-                status: 'pending',
-                candidates,
-                patch,
-                candidateLabel: top.sourceLabel
-              }
-            } else {
-              slots[index] = {
-                ...base,
-                status: 'review',
-                candidates,
-                message: '最高置信度结果没有可用的所选标签'
-              }
-            }
-          } else {
-            slots[index] = { ...base, status: 'review', candidates }
-          }
+          slots[index] = shouldAutoApplyMatch(top)
+            ? { ...base, status: 'pending', candidates, candidateLabel: top.sourceLabel }
+            : { ...base, status: 'review', candidates }
         } catch (error) {
           if (controller.signal.aborted || run !== batchMatchRun) return
           slots[index] = {
@@ -761,24 +751,62 @@ async function runBatchMatch(): Promise<void> {
           }
         } finally {
           if (!controller.signal.aborted && run === batchMatchRun) {
-            completed += 1
-            batchMatchProgress.current = completed
+            searched += 1
+            batchMatchProgress.current = searched
           }
         }
-      }
-    }
-    await Promise.all(Array.from({ length: Math.min(3, tracks.length) }, () => worker()))
-    if (run !== batchMatchRun) return
-    batchResults.value = slots.filter(
-      (entry): entry is BatchMatchTrackResult => Boolean(entry)
+      },
+      controller.signal
     )
+    if (run !== batchMatchRun) return
+
+    // 搜索与封面/歌词补全分开：补全再慢也不会占住搜索线程。
+    const automatic = slots.filter(
+      (entry): entry is BatchMatchTrackResult => entry?.status === 'pending'
+    )
+    if (automatic.length > 0) {
+      batchMatchProgress.current = 0
+      batchMatchProgress.total = automatic.length
+      batchMatchProgress.label = '补全封面与歌词'
+      let enriched = 0
+      await forEachWithConcurrency(
+        automatic,
+        BATCH_MATCH_CONCURRENCY,
+        async (entry) => {
+          if (run !== batchMatchRun) return
+          batchMatchProgress.label = entry.fileName
+          try {
+            const patch = await buildPatchForMatch(entry.candidates[0], fields, controller.signal)
+            if (controller.signal.aborted || run !== batchMatchRun) return
+            if (hasMatchedTagPatch(patch)) {
+              entry.patch = patch
+            } else {
+              entry.status = 'review'
+              entry.message = '最高置信度结果没有可用的所选标签'
+            }
+          } catch (error) {
+            if (controller.signal.aborted || run !== batchMatchRun) return
+            entry.status = 'review'
+            entry.message = error instanceof Error ? error.message : '无法补全封面或歌词'
+          } finally {
+            if (!controller.signal.aborted && run === batchMatchRun) {
+              enriched += 1
+              batchMatchProgress.current = enriched
+            }
+          }
+        },
+        controller.signal
+      )
+    }
+    if (run !== batchMatchRun) return
+    batchResults.value = slots.filter((entry): entry is BatchMatchTrackResult => Boolean(entry))
     batchMatchDone.value = true
     if (controller.signal.aborted) {
       batchMatchNotice.value = `匹配已停止，已完成 ${batchResults.value.length} / ${tracks.length} 首。`
       return
     }
-    const automatic = batchResults.value.filter((entry) => entry.status === 'pending')
-    if (automatic.length > 0) await writeBatchMatchEntries(automatic)
+    const pendingEntries = batchResults.value.filter((entry) => entry.status === 'pending')
+    if (pendingEntries.length > 0) await writeBatchMatchEntries(pendingEntries)
     if (run !== batchMatchRun) return
     batchMatchNotice.value = batchSummaryText()
   } catch (error) {
@@ -977,7 +1005,9 @@ async function restoreJournal(): Promise<void> {
     results.value = result.items
     const restored = successfulTagPaths(result.items)
     notice.value =
-      restored.length > 0 ? `已从恢复日志还原 ${restored.length} 首歌曲。` : '恢复日志中没有可还原的歌曲。'
+      restored.length > 0
+        ? `已从恢复日志还原 ${restored.length} 首歌曲。`
+        : '恢复日志中没有可还原的歌曲。'
     if (restored.length > 0) {
       try {
         await syncRestoredLibraryTags(restored)
@@ -1117,7 +1147,9 @@ async function renameSelected(): Promise<void> {
       renamed += 1
     }
     renameNotice.value =
-      failed > 0 ? `已重命名 ${renamed} 首歌曲，失败 ${failed} 首。` : `已重命名 ${renamed} 首歌曲。`
+      failed > 0
+        ? `已重命名 ${renamed} 首歌曲，失败 ${failed} 首。`
+        : `已重命名 ${renamed} 首歌曲。`
   } catch (error) {
     renameError.value = error instanceof Error ? error.message : '重命名失败'
   } finally {
@@ -1247,12 +1279,22 @@ onBeforeUnmount(() => {
     </header>
 
     <div class="tag-workshop-toolbar">
-      <input v-model="query" type="search" aria-label="筛选歌曲" placeholder="筛选标题、艺术家、专辑或路径…" />
+      <input
+        v-model="query"
+        type="search"
+        aria-label="筛选歌曲"
+        placeholder="筛选标题、艺术家、专辑或路径…"
+      />
       <button type="button" @click="selectVisible">选择当前页</button>
-      <button type="button" :disabled="selectedIds.size === 0" @click="clearSelection">清空选择</button>
+      <button type="button" :disabled="selectedIds.size === 0" @click="clearSelection">
+        清空选择
+      </button>
       <span class="tag-workshop-toolbar-note">
-        第 {{ page }} / {{ pageCount }} 页 · 当前筛选 {{ filteredTracks.length.toLocaleString('zh-CN') }} 首
-        <template v-if="hiddenCueCount > 0"> · {{ hiddenCueCount }} 首 CUE 子曲目不可直接编辑</template>
+        第 {{ page }} / {{ pageCount }} 页 · 当前筛选
+        {{ filteredTracks.length.toLocaleString('zh-CN') }} 首
+        <template v-if="hiddenCueCount > 0">
+          · {{ hiddenCueCount }} 首 CUE 子曲目不可直接编辑</template
+        >
       </span>
     </div>
     <p v-if="selectionError" class="tag-workshop-alert" role="alert">{{ selectionError }}</p>
@@ -1266,7 +1308,9 @@ onBeforeUnmount(() => {
           </div>
           <div class="tag-workshop-pager">
             <button type="button" :disabled="page <= 1" @click="changePage(-1)">上一页</button>
-            <button type="button" :disabled="page >= pageCount" @click="changePage(1)">下一页</button>
+            <button type="button" :disabled="page >= pageCount" @click="changePage(1)">
+              下一页
+            </button>
           </div>
         </header>
         <div v-if="visibleTracks.length === 0" class="tag-workshop-empty">
@@ -1309,7 +1353,9 @@ onBeforeUnmount(() => {
       <section class="tag-workshop-editor" aria-label="标签编辑器">
         <div v-if="selectedTracks.length === 0" class="tag-workshop-empty large">
           <h2>选择要整理的歌曲</h2>
-          <p>从左侧勾选歌曲后，可在同一处修改标签、封面与歌词。多选时只会写入你勾选“写入”的字段。</p>
+          <p>
+            从左侧勾选歌曲后，可在同一处修改标签、封面与歌词。多选时只会写入你勾选“写入”的字段。
+          </p>
         </div>
         <template v-else>
           <header class="tag-workshop-editor-header">
@@ -1433,9 +1479,7 @@ onBeforeUnmount(() => {
                         :disabled="busy || Boolean(applyingReviewKey)"
                         @click="applyReviewedMatch(entry, candidate)"
                       >
-                        {{
-                          applyingReviewKey === candidateKey(candidate) ? '应用中…' : '应用这条'
-                        }}
+                        {{ applyingReviewKey === candidateKey(candidate) ? '应用中…' : '应用这条' }}
                       </button>
                     </div>
                   </li>
@@ -1475,7 +1519,11 @@ onBeforeUnmount(() => {
             </details>
           </section>
 
-          <section v-if="singleTrack" class="tag-workshop-filename-tool" aria-label="从文件名识别标签">
+          <section
+            v-if="singleTrack"
+            class="tag-workshop-filename-tool"
+            aria-label="从文件名识别标签"
+          >
             <header>
               <div>
                 <strong>从文件名识别标签</strong>
@@ -1506,7 +1554,9 @@ onBeforeUnmount(() => {
               </button>
               <span class="tag-workshop-token-hint">{{ TAG_TOKEN_HINT }}</span>
             </div>
-            <p v-if="tagPatternError" class="tag-workshop-alert" role="alert">{{ tagPatternError }}</p>
+            <p v-if="tagPatternError" class="tag-workshop-alert" role="alert">
+              {{ tagPatternError }}
+            </p>
             <p v-else-if="tagPatternNotice" class="tag-workshop-notice" role="status">
               {{ tagPatternNotice }}
             </p>
@@ -1578,9 +1628,9 @@ onBeforeUnmount(() => {
                   type="button"
                   :disabled="busy"
                   @click="
-                    coverDirty = false;
-                    coverDraft = undefined;
-                    coverError = '';
+                    coverDirty = false
+                    coverDraft = undefined
+                    coverError = ''
                     coverPreview =
                       snapshot?.coverData && snapshot.coverMimeType
                         ? bytesToDataUrl(snapshot.coverData, snapshot.coverMimeType)
@@ -1600,11 +1650,7 @@ onBeforeUnmount(() => {
                 <strong>按标签重命名文件</strong>
                 <small>扩展名保持不变，同名歌词、翻译等附属文件会一起移动</small>
               </div>
-              <button
-                type="button"
-                :disabled="renameBlocked"
-                @click="renameSelected"
-              >
+              <button type="button" :disabled="renameBlocked" @click="renameSelected">
                 {{
                   renameArmed
                     ? `再次点击确认重命名 ${renameChangedRows.length} 个文件`
@@ -1640,7 +1686,9 @@ onBeforeUnmount(() => {
               重命名结果有重复文件名：{{ [...renameDuplicateNames].join('、') }}
             </p>
             <p v-else-if="renameError" class="tag-workshop-alert" role="alert">{{ renameError }}</p>
-            <p v-else-if="renameNotice" class="tag-workshop-notice" role="status">{{ renameNotice }}</p>
+            <p v-else-if="renameNotice" class="tag-workshop-notice" role="status">
+              {{ renameNotice }}
+            </p>
             <p v-if="renameArmed" class="tag-workshop-notice" role="status">
               将重命名 {{ renameChangedRows.length }} 个文件，再次点击按钮确认。
             </p>
@@ -1672,21 +1720,13 @@ onBeforeUnmount(() => {
                 <strong>重复歌曲检查</strong>
                 <small>检查所选歌曲是否与其他本地文件重复，重复项可直接加入当前选择</small>
               </div>
-              <button
-                type="button"
-                :disabled="duplicateChecking || busy"
-                @click="checkDuplicates"
-              >
-                {{
-                  duplicateChecking
-                    ? '检查中…'
-                    : duplicateChecked
-                      ? '重新检查'
-                      : '检查所选歌曲'
-                }}
+              <button type="button" :disabled="duplicateChecking || busy" @click="checkDuplicates">
+                {{ duplicateChecking ? '检查中…' : duplicateChecked ? '重新检查' : '检查所选歌曲' }}
               </button>
             </header>
-            <p v-if="duplicateError" class="tag-workshop-alert" role="alert">{{ duplicateError }}</p>
+            <p v-if="duplicateError" class="tag-workshop-alert" role="alert">
+              {{ duplicateError }}
+            </p>
             <p v-else-if="duplicateStale" class="tag-workshop-notice" role="status">
               所选歌曲已变化，可重新检查。
             </p>
@@ -1707,7 +1747,9 @@ onBeforeUnmount(() => {
                   <li v-for="item in entry.group.items" :key="item.id">
                     <div class="tag-workshop-duplicate-meta">
                       <strong>{{ item.title || '未知标题' }}</strong>
-                      <small>{{ item.artist || '未知艺术家' }} · {{ item.album || '未知专辑' }}</small>
+                      <small
+                        >{{ item.artist || '未知艺术家' }} · {{ item.album || '未知专辑' }}</small
+                      >
                       <small class="tag-workshop-duplicate-path">{{ item.filePath }}</small>
                     </div>
                     <span v-if="isPathSelected(item.filePath)" class="tag-workshop-duplicate-state">

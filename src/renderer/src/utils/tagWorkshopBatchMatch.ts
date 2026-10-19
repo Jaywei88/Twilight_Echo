@@ -39,9 +39,31 @@ export const DEFAULT_TAG_MATCH_FIELDS: ReadonlySet<TagMatchField> = new Set<TagM
   'lyrics'
 ])
 
+// MusicTag 的自动匹配默认同时开 12 个搜索线程（AutoMatchTagsWebSearchThreadCount）。
+export const BATCH_MATCH_CONCURRENCY = 12
+
 export interface MatchedTagExtras {
   coverData?: Uint8Array | null
   lyrics?: string | null
+}
+
+export async function forEachWithConcurrency<T>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<void>,
+  signal?: AbortSignal
+): Promise<void> {
+  const width = Math.max(1, Math.min(Math.trunc(limit) || 1, items.length))
+  let cursor = 0
+  const run = async (): Promise<void> => {
+    while (!signal?.aborted) {
+      const index = cursor
+      cursor += 1
+      if (index >= items.length) return
+      await worker(items[index], index)
+    }
+  }
+  await Promise.all(Array.from({ length: width }, run))
 }
 
 export function buildMatchedTagPatch(

@@ -2,14 +2,18 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { MetadataMatchCandidate } from './musicMetadataMatching.ts'
 import {
+  BATCH_MATCH_CONCURRENCY,
   buildMatchedTagPatch,
   DEFAULT_TAG_MATCH_FIELDS,
+  forEachWithConcurrency,
   hasMatchedTagPatch,
   shouldAutoApplyMatch,
   type TagMatchField
 } from './tagWorkshopBatchMatch.ts'
 
-function candidate(overrides: Partial<MetadataMatchCandidate['track']> = {}): MetadataMatchCandidate {
+function candidate(
+  overrides: Partial<MetadataMatchCandidate['track']> = {}
+): MetadataMatchCandidate {
   return {
     confidence: 'high',
     score: 96,
@@ -100,4 +104,41 @@ test('default batch match selection covers common metadata, cover and lyrics', (
   }
   assert.equal(DEFAULT_TAG_MATCH_FIELDS.has('track'), false)
   assert.equal(DEFAULT_TAG_MATCH_FIELDS.has('disc'), false)
+})
+
+test('batch matching keeps the MusicTag-style twelve searches in flight', async () => {
+  const tasks = Array.from({ length: 30 }, (_, index) => index)
+  const started: number[] = []
+  let active = 0
+  let peak = 0
+  await forEachWithConcurrency(tasks, BATCH_MATCH_CONCURRENCY, async (task) => {
+    active += 1
+    peak = Math.max(peak, active)
+    started.push(task)
+    await new Promise((resolve) => setImmediate(resolve))
+    active -= 1
+  })
+  assert.equal(BATCH_MATCH_CONCURRENCY, 12)
+  assert.equal(peak, 12)
+  assert.deepEqual(
+    [...started].sort((left, right) => left - right),
+    tasks
+  )
+})
+
+test('bounded concurrency stops scheduling once the run is aborted', async () => {
+  const controller = new AbortController()
+  const started: number[] = []
+  await forEachWithConcurrency(
+    Array.from({ length: 30 }, (_, index) => index),
+    4,
+    async (task) => {
+      started.push(task)
+      if (task === 2) controller.abort()
+      await Promise.resolve()
+    },
+    controller.signal
+  )
+  assert.equal(started.includes(29), false)
+  assert.ok(started.length < 30)
 })

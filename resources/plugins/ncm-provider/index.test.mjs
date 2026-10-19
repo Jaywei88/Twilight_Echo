@@ -439,6 +439,83 @@ test('token bucket survives a system clock rollback without wedging requests', a
   }
 })
 
+test('search waits out a NetEase 405 cooldown and retries instead of returning empty', async () => {
+  const requestTimes = []
+  let calls = 0
+  const provider = await activateProvider(async (path) => {
+    const url = parseRequest(path)
+    assert.equal(url.pathname, '/cloudsearch')
+    calls += 1
+    requestTimes.push(Date.now())
+    if (calls === 1) {
+      return { code: 405, msg: '操作频繁，请稍后再试', message: '操作频繁，请稍后再试' }
+    }
+    return { result: { songs: [song(42)], songCount: 1 } }
+  })
+
+  try {
+    mock.timers.enable({ apis: ['Date', 'setTimeout'] })
+    mock.timers.setTime(1_000_000)
+    const pending = provider.searchSongs('moon river')
+    await new Promise((resolve) => setImmediate(resolve))
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(requestTimes.length, 1)
+    mock.timers.tick(5_000)
+    const result = await pending
+    assert.equal(calls, 2)
+    assert.equal(result.items.length, 1)
+    assert.equal(result.items[0].title, 'song-42')
+    assert.ok(requestTimes[1] - requestTimes[0] >= 5_000)
+  } finally {
+    mock.timers.reset()
+    ncmProvider.deactivate()
+  }
+})
+
+test('concurrent searches share one 405 cooldown and all retry', async () => {
+  let calls = 0
+  const provider = await activateProvider(async () => {
+    calls += 1
+    if (calls <= 5) {
+      return { code: 405, msg: '操作频繁，请稍后再试', message: '操作频繁，请稍后再试' }
+    }
+    return { result: { songs: [song(calls)], songCount: 1 } }
+  })
+
+  try {
+    mock.timers.enable({ apis: ['Date', 'setTimeout'] })
+    mock.timers.setTime(1_000_000)
+    let results
+    let failure
+    const pending = Promise.all(
+      Array.from({ length: 12 }, (_, index) => provider.searchSongs(`q${index}`))
+    ).then(
+      (value) => {
+        results = value
+      },
+      (error) => {
+        failure = error
+      }
+    )
+    for (let step = 0; step < 40 && !results && !failure; step += 1) {
+      mock.timers.tick(500)
+      await new Promise((resolve) => setImmediate(resolve))
+    }
+    await pending
+    if (failure) throw failure
+    assert.ok(results)
+    assert.equal(results.length, 12)
+    assert.equal(
+      results.every((result) => result.items.length === 1),
+      true
+    )
+    assert.equal(calls, 17, 'five rejected attempts plus twelve successful retries')
+  } finally {
+    mock.timers.reset()
+    ncmProvider.deactivate()
+  }
+})
+
 test('personal FM returns fresh session tracks across repeated roaming requests', async () => {
   let requestNumber = 0
   const provider = await activateProvider(async (path) => {

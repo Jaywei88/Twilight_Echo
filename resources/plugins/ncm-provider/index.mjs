@@ -236,6 +236,8 @@ function resetCaches() {
   // 令牌桶随会话一起重置：排队中的 acquire 取的是新桶令牌，语义不受影响。
   requestTokenCount = REQUEST_TOKEN_BUCKET_CAPACITY
   requestTokenRefillAt = Date.now()
+  rateLimitCooldownMs = 0
+  rateLimitResumeAt = 0
 }
 
 function runIdempotentProviderWrite(scope, args, requestContext, operation, replaySuccess) {
@@ -398,6 +400,15 @@ const REQUEST_TOKEN_REFILL_PER_MS = 5 / 1000
 let requestTokenCount = REQUEST_TOKEN_BUCKET_CAPACITY
 let requestTokenRefillAt = Date.now()
 let requestTokenTail = Promise.resolve()
+// 网易云对 /cloudsearch 的风控会返回 HTTP/code 405「操作频繁」。命中后暂停
+// 所有上游请求并指数退避：并发的 12 个搜索同时撞上只会共享一次冷却窗口。
+const RATE_LIMIT_MESSAGE_PATTERN =
+  /操作频繁|请求过于频繁|too many requests|too frequent|rate.?limit/i
+const RATE_LIMIT_COOLDOWN_BASE_MS = 5_000
+const RATE_LIMIT_COOLDOWN_MAX_MS = 30_000
+const SEARCH_READ_ATTEMPTS = 5
+let rateLimitCooldownMs = 0
+let rateLimitResumeAt = 0
 
 function acquireRequestToken(signal) {
   const acquire = requestTokenTail.then(
@@ -441,17 +452,90 @@ function acquireRequestToken(signal) {
   return acquire
 }
 
+function apiResponseCode(data) {
+  if (!data || typeof data !== 'object') return null
+  const code = Number(data.code ?? data.body?.code)
+  return Number.isFinite(code) ? code : null
+}
+
+function apiResponseMessage(data) {
+  if (!data || typeof data !== 'object') return ''
+  return String(data.message ?? data.msg ?? data.body?.message ?? data.body?.msg ?? '')
+}
+
+function isRateLimitMessage(message) {
+  return RATE_LIMIT_MESSAGE_PATTERN.test(message) || /\b405\b/.test(message)
+}
+
+function isRateLimitResponse(data) {
+  return apiResponseCode(data) === 405 || isRateLimitMessage(apiResponseMessage(data))
+}
+
+function isRateLimitError(error) {
+  return (
+    (error && typeof error === 'object' && error.code === 'NCM_RATE_LIMITED') ||
+    isRateLimitMessage(getErrorMessage(error))
+  )
+}
+
+function createRateLimitError(message) {
+  const error = new Error(message || '网易云触发风控（操作频繁），请稍后再试')
+  error.code = 'NCM_RATE_LIMITED'
+  return error
+}
+
+function noteRateLimit() {
+  const now = Date.now()
+  if (now < rateLimitResumeAt) return rateLimitResumeAt
+  rateLimitCooldownMs = rateLimitCooldownMs
+    ? Math.min(RATE_LIMIT_COOLDOWN_MAX_MS, rateLimitCooldownMs * 2)
+    : RATE_LIMIT_COOLDOWN_BASE_MS
+  rateLimitResumeAt = now + rateLimitCooldownMs
+  getContext().logger.warn(
+    `网易云触发风控，暂停上游请求 ${Math.ceil(rateLimitCooldownMs / 1000)} 秒`
+  )
+  return rateLimitResumeAt
+}
+
+function noteUpstreamSuccess(requestStartedAt) {
+  // 只有冷却结束后才发出的请求成功，才说明风控窗口已经解除。
+  if (requestStartedAt >= rateLimitResumeAt) rateLimitCooldownMs = 0
+}
+
+async function waitForRateLimitCooldown(signal) {
+  while (true) {
+    const remaining = rateLimitResumeAt - Date.now()
+    if (remaining <= 0) return
+    await waitWithAbort(remaining, signal)
+  }
+}
+
 async function request(path, cookie, requestContext) {
   throwIfRequestAborted(requestContext)
+  await waitForRateLimitCooldown(requestContext?.signal)
   await acquireRequestToken(requestContext?.signal)
+  throwIfRequestAborted(requestContext)
+  // 排队取令牌期间可能已有并发请求触发风控，拿到令牌后必须再等一次。
+  await waitForRateLimitCooldown(requestContext?.signal)
+  const requestStartedAt = Date.now()
   const data = await ncmApi.request(shouldUsePcUa(path) ? withPcUa(path) : path, cookie, {
     signal: requestContext?.signal,
     idempotencyKey: requestContext?.idempotencyKey
   })
   throwIfRequestAborted(requestContext)
-  if (data && typeof data === 'object' && data.code === -1) {
-    throw new Error(data.message || 'NetEase API request failed')
+  if (isRateLimitResponse(data)) {
+    noteRateLimit()
+    throw createRateLimitError(apiResponseMessage(data))
   }
+  if (apiResponseCode(data) === -1) {
+    const message = apiResponseMessage(data)
+    if (isRateLimitMessage(message)) {
+      noteRateLimit()
+      throw createRateLimitError(message)
+    }
+    throw new Error(message || 'NetEase API request failed')
+  }
+  noteUpstreamSuccess(requestStartedAt)
   return data && typeof data === 'object' ? data : {}
 }
 
@@ -474,6 +558,7 @@ function getErrorMessage(error) {
 }
 
 function isReadApiTransientError(error) {
+  if (isRateLimitError(error)) return true
   const message = getErrorMessage(error)
   return /Unexpected|JSON|timeout|timed out|ECONN|ENOTFOUND|EAI_AGAIN|socket|network|fetch failed|502|503|504/i.test(
     message
@@ -2257,9 +2342,14 @@ async function getLyrics(track, requestContext) {
   return getLegacyLyrics(songId, requestContext)
 }
 
-async function searchSongs(keywords, limit = 30, offset = 0) {
-  const data = await requestOptionalAuth(
-    `/cloudsearch?keywords=${encodeURIComponent(keywords)}&type=1&limit=${limit}&offset=${offset}`
+async function searchSongs(keywords, limit = 30, offset = 0, requestContext) {
+  const data = await requestOptionalAuthRead(
+    `/cloudsearch?keywords=${encodeURIComponent(keywords)}&type=1&limit=${limit}&offset=${offset}`,
+    {
+      attempts: SEARCH_READ_ATTEMPTS,
+      label: `search ${keywords}`,
+      signal: requestContext?.signal
+    }
   )
   const result = data.result || data.data?.result || {}
   const songs = Array.isArray(result.songs) ? result.songs : []
