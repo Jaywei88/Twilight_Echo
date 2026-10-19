@@ -220,6 +220,14 @@ export type {
 } from '../shared/localLibraryTags.ts'
 
 export type {
+  LocalLibraryRenameItem,
+  LocalLibraryRenameItemResult,
+  LocalLibraryRenameRequest,
+  LocalLibraryRenameResult,
+  LocalLibraryRenameSidecar
+} from '../shared/localLibraryRename.ts'
+
+export type {
   LocalLibraryScanProgress,
   LocalLibraryScanStatus,
   LocalLibraryScanUpdate,

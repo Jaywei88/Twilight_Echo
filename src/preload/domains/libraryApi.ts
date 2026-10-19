@@ -8,6 +8,8 @@ import type {
   LocalLibraryClearExclusionsResult,
   LocalLibraryRemoveRequest,
   LocalLibraryRemoveResult,
+  LocalLibraryRenameRequest,
+  LocalLibraryRenameResult,
   LocalLibraryResetResult,
   LocalLibraryRestoreRequest,
   LocalLibraryRestoreResult,
@@ -47,6 +49,8 @@ export const libraryAndFileSystemApi = {
       ipcRenderer.invoke(IPC.library.restoreTags, request),
     readTags: (request: LocalLibraryTagReadRequest): Promise<LocalLibraryTagReadResult> =>
       ipcRenderer.invoke(IPC.library.readTags, request),
+    renameFiles: (request: LocalLibraryRenameRequest): Promise<LocalLibraryRenameResult> =>
+      ipcRenderer.invoke(IPC.library.renameFiles, request),
     cancelTagWrite: (operationId: string): Promise<boolean> =>
       ipcRenderer.invoke(IPC.library.cancelTagWrite, { operationId }),
     onTagWriteProgress: (cb: (progress: LocalLibraryTagWriteProgress) => void): (() => void) => {

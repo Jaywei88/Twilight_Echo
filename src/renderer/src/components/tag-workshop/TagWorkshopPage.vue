@@ -4,6 +4,7 @@ import CoverImg from '@renderer/components/CoverImg.vue'
 import { formatDuration } from '@renderer/components/song-list/formatDuration'
 import { syncPluginProviders, useMediaProviders } from '@renderer/providers'
 import { useMusicStore } from '@renderer/stores/useMusicStore'
+import { usePlayerStore } from '@renderer/stores/usePlayerStore'
 import type { Track } from '@renderer/types/music'
 import {
   buildMetadataMatchCandidates,
@@ -17,12 +18,25 @@ import {
   tagWritePathKey,
   validateTagCoverFile
 } from '@renderer/utils/localLibraryTagManagement.ts'
+import {
+  filenameExtension,
+  filenameStem,
+  filenameTemplateHasTokens,
+  filenameTemplateValuesFromTrack,
+  guessFilenamePattern,
+  parseFilenameTemplate,
+  renderFilenameTemplate,
+  TAG_WORKSHOP_FILENAME_PRESETS,
+  type FilenameTemplateKey,
+  type FilenameTemplateValues
+} from '@renderer/utils/tagWorkshopFilenames'
 import type {
   LocalLibraryTagOperationResult,
   LocalLibraryTagPatch,
   LocalLibraryTagSnapshot,
   LocalLibraryTagWriteProgress
 } from '../../../../shared/localLibraryTags.ts'
+import type { LocalLibraryRenameItemResult } from '../../../../shared/localLibraryRename.ts'
 import { MUSIC_TAG_WORKSHOP_MAX_ITEMS } from '../../../../shared/musicTagWorkshop.ts'
 
 type FieldKey =
@@ -67,6 +81,7 @@ const NUMERIC_FIELDS = new Set<FieldKey>(['track', 'trackCount', 'disc', 'discCo
 const PAGE_SIZE = 100
 
 const musicStore = useMusicStore()
+const playerStore = usePlayerStore()
 const mediaProviders = useMediaProviders()
 const query = ref('')
 const page = ref(1)
@@ -141,6 +156,17 @@ const applyingLyricsKey = ref('')
 let matchRequest = 0
 let matchAbort: AbortController | null = null
 
+const tagPattern = ref('{artist} - {title}')
+const tagPatternError = ref('')
+const tagPatternNotice = ref('')
+const renameTemplate = ref('{artist} - {title}')
+const renameError = ref('')
+const renameNotice = ref('')
+const renaming = ref(false)
+const renameArmed = ref(false)
+const renameResults = shallowRef<LocalLibraryRenameItemResult[]>([])
+const TAG_TOKEN_HINT = '{title} {artist} {album} {albumArtist} {genre} {year} {track:02} {disc:02}'
+
 const resultSummary = computed(() => summarizeTagWriteResults(results.value))
 const failedResults = computed(() =>
   results.value.filter((result) => result.status !== 'success').slice(0, 20)
@@ -180,12 +206,56 @@ const canWrite = computed(
     patchPreview.value.length > 0 &&
     !formError.value
 )
+const renameTemplateValid = computed(() => filenameTemplateHasTokens(renameTemplate.value))
+const renamePreview = computed(() => {
+  if (!renameTemplateValid.value) return []
+  return selectedTracks.value.map((track) => {
+    const currentName = trackFileName(track)
+    const extension = filenameExtension(currentName)
+    const fileName = renderFilenameTemplate(
+      renameTemplate.value,
+      renameValuesForTrack(track),
+      extension
+    )
+    return { track, currentName, fileName, changed: fileName !== currentName }
+  })
+})
+const renameDuplicateNames = computed(() => {
+  const seen = new Set<string>()
+  const duplicates = new Set<string>()
+  for (const row of renamePreview.value) {
+    const key = row.fileName.toLocaleLowerCase('en-US')
+    if (seen.has(key)) duplicates.add(row.fileName)
+    seen.add(key)
+  }
+  return duplicates
+})
+const renameChangedRows = computed(() => renamePreview.value.filter((row) => row.changed))
+const renameBlocked = computed(
+  () =>
+    busy.value ||
+    renaming.value ||
+    !renameTemplateValid.value ||
+    renameDuplicateNames.value.size > 0 ||
+    renameChangedRows.value.length === 0
+)
 
 watch(query, () => {
   page.value = 1
 })
 watch(pageCount, () => {
   if (page.value > pageCount.value) page.value = pageCount.value
+})
+watch(renameTemplate, () => {
+  renameArmed.value = false
+  renameError.value = ''
+  renameNotice.value = ''
+})
+watch(selectedIds, () => {
+  renameArmed.value = false
+  renameError.value = ''
+  renameNotice.value = ''
+  renameResults.value = []
 })
 watch(
   () => singleTrack.value?.id,
@@ -207,11 +277,24 @@ function resetEditor(): void {
   Object.assign(fieldIncluded, blankIncluded())
   resetCover()
   resetMatch()
+  resetFilenameTools()
   readError.value = ''
   formError.value = ''
   results.value = []
   progress.value = null
   restoreArmed.value = false
+}
+
+function resetFilenameTools(): void {
+  tagPattern.value = '{artist} - {title}'
+  tagPatternError.value = ''
+  tagPatternNotice.value = ''
+  renameTemplate.value = '{artist} - {title}'
+  renameError.value = ''
+  renameNotice.value = ''
+  renaming.value = false
+  renameArmed.value = false
+  renameResults.value = []
 }
 
 function resetMatch(): void {
@@ -254,6 +337,8 @@ async function loadSelectedSnapshot(): Promise<void> {
   resetEditor()
   if (!track) return
   matchQuery.value = [track.title, track.artist].filter(Boolean).join(' ')
+  tagPattern.value =
+    guessFilenamePattern(filenameStem(trackFileName(track))) ?? '{artist} - {title}'
   const request = ++readRequest
   reading.value = true
   try {
@@ -313,6 +398,7 @@ function clearSelection(): void {
 function onFieldInput(key: FieldKey): void {
   if (!fieldIncluded[key]) fieldIncluded[key] = true
   formError.value = ''
+  renameArmed.value = false
 }
 
 function buildPatch(): { patch: LocalLibraryTagPatch; error: string } {
@@ -449,6 +535,7 @@ function applyCandidateMetadata(candidate: MetadataMatchCandidate): void {
     fieldIncluded.year = true
     applied += 1
   }
+  renameArmed.value = false
   matchNotice.value =
     applied > 0
       ? `已从 ${candidate.sourceLabel} 填入 ${applied} 个字段，确认后点击写入。`
@@ -607,6 +694,129 @@ function changePage(delta: number): void {
 function extensionOf(track: Track): string {
   const match = /\.([^.\\/]+)$/.exec(track.fileName || track.filePath)
   return match ? match[1].toLocaleUpperCase('en-US') : ''
+}
+
+function trackFileName(track: Track): string {
+  const name = track.fileName?.trim()
+  if (name) return name
+  const normalized = track.filePath.replace(/\\/g, '/')
+  return normalized.slice(normalized.lastIndexOf('/') + 1)
+}
+
+function renameValuesForTrack(track: Track): FilenameTemplateValues {
+  if (singleTrack.value?.id !== track.id) return filenameTemplateValuesFromTrack(track)
+  return {
+    title: fieldValues.title,
+    artist: fieldValues.artist,
+    album: fieldValues.album,
+    albumArtist: fieldValues.albumArtist,
+    genre: fieldValues.genre,
+    year: fieldValues.year,
+    track: fieldValues.track,
+    disc: fieldValues.disc
+  }
+}
+
+function useTagPatternPreset(template: string): void {
+  tagPattern.value = template
+  tagPatternError.value = ''
+  tagPatternNotice.value = ''
+}
+
+function useRenamePreset(template: string): void {
+  renameTemplate.value = template
+  renameArmed.value = false
+  renameError.value = ''
+  renameNotice.value = ''
+}
+
+function applyTagsFromFilename(): void {
+  const track = singleTrack.value
+  if (!track || busy.value) return
+  tagPatternError.value = ''
+  tagPatternNotice.value = ''
+  const parsed = parseFilenameTemplate(tagPattern.value, filenameStem(trackFileName(track)))
+  if (!parsed) {
+    tagPatternError.value = '文件名不符合当前识别模式'
+    return
+  }
+  let applied = 0
+  for (const key of [
+    'title',
+    'artist',
+    'album',
+    'albumArtist',
+    'genre',
+    'year',
+    'track',
+    'disc'
+  ] as FilenameTemplateKey[]) {
+    const value = parsed[key]
+    if (!value) continue
+    if (NUMERIC_FIELDS.has(key) && !/^\d{1,4}$/.test(value)) continue
+    fieldValues[key] = value
+    fieldIncluded[key] = true
+    applied += 1
+  }
+  if (applied === 0) {
+    tagPatternError.value = '当前模式没有解析出可填入的字段'
+    return
+  }
+  tagPatternNotice.value = `已从文件名填入 ${applied} 个字段，确认后点击写入。`
+  renameArmed.value = false
+}
+
+async function renameSelected(): Promise<void> {
+  if (renaming.value || busy.value) return
+  if (!renameTemplateValid.value) {
+    renameError.value = '重命名模板至少需要包含一个字段占位符'
+    return
+  }
+  if (renameDuplicateNames.value.size > 0) {
+    renameError.value = `重命名结果有重复文件名：${[...renameDuplicateNames.value].join('、')}`
+    return
+  }
+  const rows = renamePreview.value.filter((row) => row.changed)
+  if (rows.length === 0) {
+    renameNotice.value = '按当前模板没有需要改名的歌曲'
+    return
+  }
+  if (!renameArmed.value) {
+    renameArmed.value = true
+    return
+  }
+  renameArmed.value = false
+  renaming.value = true
+  renameError.value = ''
+  renameNotice.value = ''
+  renameResults.value = []
+  try {
+    const result = await window.api.library.renameFiles({
+      items: rows.map((row) => ({ filePath: row.track.filePath, fileName: row.fileName }))
+    })
+    renameResults.value = result.items
+    let renamed = 0
+    let failed = 0
+    for (const item of result.items) {
+      if (item.status !== 'success' || !item.newFilePath) {
+        failed += 1
+        continue
+      }
+      const updated = musicStore.applyLocalRename(item.filePath, item.newFilePath)
+      if (!updated) {
+        failed += 1
+        continue
+      }
+      playerStore.applyLocalPathChange(item.filePath, item.newFilePath, updated.fileName)
+      renamed += 1
+    }
+    renameNotice.value =
+      failed > 0 ? `已重命名 ${renamed} 首歌曲，失败 ${failed} 首。` : `已重命名 ${renamed} 首歌曲。`
+  } catch (error) {
+    renameError.value = error instanceof Error ? error.message : '重命名失败'
+  } finally {
+    renaming.value = false
+  }
 }
 
 function bytesToDataUrl(data: Uint8Array, mimeType: string): string {
@@ -814,6 +1024,44 @@ onBeforeUnmount(() => {
             </ul>
           </section>
 
+          <section v-if="singleTrack" class="tag-workshop-filename-tool" aria-label="从文件名识别标签">
+            <header>
+              <div>
+                <strong>从文件名识别标签</strong>
+                <small>用占位符描述文件名结构，再把识别结果填入编辑器</small>
+              </div>
+              <button type="button" :disabled="busy" @click="applyTagsFromFilename">
+                从文件名填入
+              </button>
+            </header>
+            <div class="tag-workshop-filename-controls">
+              <input
+                v-model="tagPattern"
+                type="text"
+                aria-label="文件名识别模式"
+                placeholder="{artist} - {title}"
+                :disabled="busy"
+              />
+            </div>
+            <div class="tag-workshop-preset-row">
+              <button
+                v-for="preset in TAG_WORKSHOP_FILENAME_PRESETS"
+                :key="preset.template"
+                type="button"
+                :disabled="busy"
+                @click="useTagPatternPreset(preset.template)"
+              >
+                {{ preset.label }}
+              </button>
+              <span class="tag-workshop-token-hint">{{ TAG_TOKEN_HINT }}</span>
+            </div>
+            <p v-if="tagPatternError" class="tag-workshop-alert" role="alert">{{ tagPatternError }}</p>
+            <p v-else-if="tagPatternNotice" class="tag-workshop-notice" role="status">
+              {{ tagPatternNotice }}
+            </p>
+            <p class="tag-workshop-hint">当前文件名：{{ trackFileName(singleTrack) }}</p>
+          </section>
+
           <div class="tag-workshop-fields">
             <div
               v-for="field in FIELD_DEFINITIONS"
@@ -893,6 +1141,78 @@ onBeforeUnmount(() => {
               </div>
               <p v-if="coverError" class="tag-workshop-alert" role="alert">{{ coverError }}</p>
             </div>
+          </section>
+
+          <section class="tag-workshop-rename" aria-label="按标签重命名文件">
+            <header>
+              <div>
+                <strong>按标签重命名文件</strong>
+                <small>扩展名保持不变，同名歌词、翻译等附属文件会一起移动</small>
+              </div>
+              <button
+                type="button"
+                :disabled="renameBlocked"
+                @click="renameSelected"
+              >
+                {{
+                  renameArmed
+                    ? `再次点击确认重命名 ${renameChangedRows.length} 个文件`
+                    : `重命名 ${renameChangedRows.length} 个文件`
+                }}
+              </button>
+            </header>
+            <div class="tag-workshop-filename-controls">
+              <input
+                v-model="renameTemplate"
+                type="text"
+                aria-label="重命名模板"
+                placeholder="{artist} - {title}"
+                :disabled="busy || renaming"
+              />
+            </div>
+            <div class="tag-workshop-preset-row">
+              <button
+                v-for="preset in TAG_WORKSHOP_FILENAME_PRESETS"
+                :key="preset.template"
+                type="button"
+                :disabled="busy || renaming"
+                @click="useRenamePreset(preset.template)"
+              >
+                {{ preset.label }}
+              </button>
+              <span class="tag-workshop-token-hint">{{ TAG_TOKEN_HINT }}</span>
+            </div>
+            <p v-if="!renameTemplateValid" class="tag-workshop-alert" role="alert">
+              重命名模板至少需要包含一个字段占位符
+            </p>
+            <p v-else-if="renameDuplicateNames.size > 0" class="tag-workshop-alert" role="alert">
+              重命名结果有重复文件名：{{ [...renameDuplicateNames].join('、') }}
+            </p>
+            <p v-else-if="renameError" class="tag-workshop-alert" role="alert">{{ renameError }}</p>
+            <p v-else-if="renameNotice" class="tag-workshop-notice" role="status">{{ renameNotice }}</p>
+            <p v-if="renameArmed" class="tag-workshop-notice" role="status">
+              将重命名 {{ renameChangedRows.length }} 个文件，再次点击按钮确认。
+            </p>
+            <ul v-if="renameChangedRows.length > 0" class="tag-workshop-rename-preview">
+              <li
+                v-for="row in renameChangedRows"
+                :key="row.track.id"
+                :class="{ 'is-duplicate': renameDuplicateNames.has(row.fileName) }"
+              >
+                <span class="tag-workshop-rename-old">{{ row.currentName }}</span>
+                <span class="tag-workshop-rename-arrow" aria-hidden="true">→</span>
+                <strong>{{ row.fileName }}</strong>
+              </li>
+            </ul>
+            <p v-else class="tag-workshop-hint">按当前模板没有需要改名的歌曲。</p>
+            <ul v-if="renameResults.length > 0" class="tag-workshop-rename-results">
+              <li v-for="item in renameResults" :key="item.filePath">
+                <span>{{ item.filePath }}</span>
+                <strong :class="{ 'is-success': item.status === 'success' }">
+                  {{ item.status === 'success' ? '已重命名' : (item.message ?? item.status) }}
+                </strong>
+              </li>
+            </ul>
           </section>
 
           <section class="tag-workshop-preview" aria-label="写入预览">

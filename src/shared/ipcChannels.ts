@@ -110,6 +110,7 @@ export const IPC = {
     getWatcherStatus: 'library:getWatcherStatus',
     pauseScan: 'library:pauseScan',
     readTags: 'library:readTags',
+    renameFiles: 'library:renameFiles',
     removeTracks: 'library:removeTracks',
     reset: 'library:reset',
     restoreExclusions: 'library:restoreExclusions',

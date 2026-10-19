@@ -1349,6 +1349,34 @@ function patchTrackInQueues(updatedTrack: Track): void {
   originalQueue.value = patchPlaybackQueueTrack(originalQueue.value, updatedTrack)
 }
 
+function applyLocalPathChange(filePath: string, newFilePath: string, newFileName: string): void {
+  const key = normalizeRemovalPath(filePath)
+  const patch = (track: Track): Track => {
+    if (getTrackSource(track) !== 'local') return track
+    if (!track.filePath || normalizeRemovalPath(track.filePath) !== key) return track
+    return { ...track, filePath: newFilePath, fileName: newFileName }
+  }
+  let changed = false
+  const patchQueue = (rows: Track[]): Track[] =>
+    rows.map((track) => {
+      const next = patch(track)
+      if (next !== track) changed = true
+      return next
+    })
+  queue.value = patchQueue(queue.value)
+  originalQueue.value = patchQueue(originalQueue.value)
+  const current = currentTrack.value
+  if (current) {
+    const next = patch(current)
+    if (next !== current) {
+      currentTrack.value = next
+      lastActiveTrack = next
+      changed = true
+    }
+  }
+  if (changed) void queueNativeQueueStateSync().catch(() => undefined)
+}
+
 function findTrackIndexFromPlaybackInfo(info: NativePlaybackInfo): number {
   // The engine's queue index is window-relative for partial queues and its
   // source may be a re-signed provider URL. The committed window mapping is
@@ -4014,6 +4042,7 @@ export function usePlayerStore() {
   return {
     adoptAfterglowRestore,
     rehydrateCurrentTrackFromLibrary,
+    applyLocalPathChange,
     currentTrack,
     dominantColor,
     coverThemeColor,

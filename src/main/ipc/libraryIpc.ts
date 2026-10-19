@@ -3,6 +3,7 @@ import { app, shell, type IpcMain, type IpcMainInvokeEvent } from 'electron'
 import { randomUUID } from 'crypto'
 import { join } from 'path'
 import { createTagWriteIpcHandlers } from '../library/tagWriteIpc.ts'
+import { createRenameIpcHandlers } from '../library/renameIpc.ts'
 import { createDuplicateDetectionIpcHandlers } from '../library/duplicateDetectionIpc.ts'
 import {
   LocalLibraryIndexCoordinator,
@@ -141,6 +142,14 @@ export function registerLibraryIpc(ipcMain: IpcMain): void {
     sendProgress: (event, progress) => {
       ;(event as IpcMainInvokeEvent).sender.send(IPC.library.tagWriteProgress, progress)
     }
+  })
+  const renameIpc = createRenameIpcHandlers({
+    assertTrustedSender: (event) =>
+      assertTrustedIpcSender(event as IpcMainInvokeEvent, 'library rename IPC'),
+    authorizeAudioFile: async (filePath) =>
+      await resolveAuthorizedAudioFile(normalizeLocalPath(filePath, 'rename audio file path')),
+    redactError: (error) =>
+      redactSensitiveText(error instanceof Error ? error.message : String(error))
   })
   const duplicateDetectionIpc = createDuplicateDetectionIpcHandlers({
     assertTrustedSender: (event) =>
@@ -451,6 +460,10 @@ export function registerLibraryIpc(ipcMain: IpcMain): void {
   ipcMain.handle(
     IPC.library.writeTags,
     async (event, rawRequest: unknown) => await tagWriteIpc.write(event, rawRequest)
+  )
+  ipcMain.handle(
+    IPC.library.renameFiles,
+    async (event, rawRequest: unknown) => await renameIpc.rename(event, rawRequest)
   )
 
   ipcMain.handle(

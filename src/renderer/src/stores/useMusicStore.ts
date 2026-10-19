@@ -703,6 +703,24 @@ export function useMusicStore() {
     return changed
   }
 
+  function applyLocalRename(filePath: string, newFilePath: string): Track | null {
+    const key = normalizePortableLibraryPath(filePath)
+    const normalizedTarget = newFilePath.replace(/\\/g, '/')
+    const fileName = normalizedTarget.slice(normalizedTarget.lastIndexOf('/') + 1)
+    let updated: Track | null = null
+    const nextTracks = tracks.value.map((track) => {
+      if (normalizePortableLibraryPath(track.filePath) !== key) return track
+      const next = { ...track, filePath: newFilePath, fileName }
+      updated ??= next
+      return next
+    })
+    if (!updated) return null
+    setTracks(nextTracks)
+    scheduleRebuild()
+    void scheduleSaveLibrary()
+    return updated
+  }
+
   function applyLocalCover(filePaths: readonly string[], cover: string | null): number {
     const paths = new Set(filePaths.map(normalizePortableLibraryPath))
     if (paths.size === 0) return 0
@@ -1150,6 +1168,7 @@ export function useMusicStore() {
     clearExcludedTracks,
     applyLocalTagWrite,
     applyLocalCover,
+    applyLocalRename,
     clearTrackMetadataMatch,
     applyTrackMetadataMatch,
     clearTracks,

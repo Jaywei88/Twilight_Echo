@@ -377,6 +377,9 @@ interface WindowAPI {
     writeTags: (request: LocalLibraryTagWriteRequest) => Promise<LocalLibraryTagWriteResult>
     restoreTags: (request: LocalLibraryTagRestoreRequest) => Promise<LocalLibraryTagRestoreResult>
     readTags: (request: LocalLibraryTagReadRequest) => Promise<LocalLibraryTagReadResult>
+    renameFiles: (
+      request: import('../shared/localLibraryRename.ts').LocalLibraryRenameRequest
+    ) => Promise<import('../shared/localLibraryRename.ts').LocalLibraryRenameResult>
     cancelTagWrite: (operationId: string) => Promise<boolean>
     onTagWriteProgress: (cb: (progress: LocalLibraryTagWriteProgress) => void) => () => void
     scanStartup: () => Promise<LocalLibraryScanUpdate>
