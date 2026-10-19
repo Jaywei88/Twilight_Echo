@@ -486,6 +486,12 @@ export interface PlaybackInfo extends PlaybackOutputInfoMirror {
   upcomingQueueIndex?: number
   /** Main-issued content version for mapping partial native queues to logical entries. */
   queueToken?: string
+  /**
+   * Track id of the item the engine is actually playing, resolved by source in
+   * the main process. Renderers map it to their logical queue entry without
+   * depending on the native index, which is window-relative for partial queues.
+   */
+  queueItemId?: string
   playMode: PlayMode
   source: string
   codec: string

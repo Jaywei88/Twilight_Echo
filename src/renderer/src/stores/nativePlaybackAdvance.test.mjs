@@ -111,6 +111,73 @@ test('NetEase native windows map opaque grants to the incoming UI track and sour
   assert.equal(f.clock.playbackClockSnapshot.value.trackId, 'ncm:b')
 })
 
+test('a loudnorm queue requeue maps the boundary by the main-resolved track id', async (t) => {
+  const f = handoffFixture(t)
+  // The engine reloaded its own windowed queue at the boundary: no committed
+  // renderer window, a 0-based reported index, and a re-signed provider URL —
+  // exactly the state that used to leave the playbar on the outgoing track.
+  f.context.nativeQueueLoader = new NativeQueueLoader()
+  f.context.nativeSourceToTrackId = new Map()
+  f.context.nativeQueueDelegated = true
+  f.context.nativeQueueSyncRequest = null
+  f.context.findNativeQueueTrackIndex = findNativeQueueTrackIndex
+  vm.runInContext(productionFunction('findQueueIndexByTrackId'), f.context)
+  vm.runInContext(productionFunction('findTrackIndexFromPlaybackInfo'), f.context)
+  const info = {
+    ...f.info(f.incoming, 0, 2.5),
+    source: 'https://cdn.test/re-signed-b.flac',
+    queueItemId: f.incoming.id
+  }
+  assert.equal(f.context.applyNativePlaybackInfo(info), true)
+  assert.equal(f.context.queueIndex.value, 1)
+  assert.equal(f.context.currentTrack.value.id, f.incoming.id)
+  assert.equal(f.context.currentTime.value, 2.5)
+  assert.equal(f.context.duration.value, 257)
+  // A follow-up tick whose id no longer resolves (token gone, source re-signed
+  // again) is an unidentifiable snapshot: the intent guard drops it and the
+  // playbar must not snap onto an arbitrary queue row.
+  const noId = { ...info, queueItemId: undefined, source: 'https://cdn.test/re-signed-b2.flac' }
+  assert.equal(f.context.applyNativePlaybackInfo(noId), false)
+  assert.equal(f.context.currentTrack.value.id, f.incoming.id)
+  assert.equal(f.context.queueIndex.value, 1)
+})
+
+test('a stale committed window defers to the main-resolved track id', async (t) => {
+  const f = handoffFixture(t)
+  // The committed window still selects the outgoing row at the reported index,
+  // but the engine reloaded its queue and now plays a different track id.
+  const loader = new NativeQueueLoader()
+  await loader.loadPrepared(
+    {
+      items: [{ id: f.outgoing.id, source: f.outgoing.streamUrl }],
+      startIndex: 0,
+      delegated: false,
+      queueIndices: [0, 1]
+    },
+    { loadQueue: async () => ({ queueToken: 'stale-window' }) },
+    f.context.queue.value
+  )
+  f.context.nativeQueueLoader = loader
+  f.context.nativeSourceToTrackId = new Map()
+  f.context.nativeQueueDelegated = true
+  f.context.nativeQueueSyncRequest = null
+  f.context.findNativeQueueTrackIndex = findNativeQueueTrackIndex
+  vm.runInContext(productionFunction('findQueueIndexByTrackId'), f.context)
+  vm.runInContext(productionFunction('findTrackIndexFromPlaybackInfo'), f.context)
+  const info = {
+    ...f.info(f.incoming, 0, 1.5),
+    queueToken: 'stale-window',
+    queueItemId: f.incoming.id
+  }
+  assert.equal(f.context.applyNativePlaybackInfo(info), true)
+  assert.equal(f.context.currentTrack.value.id, f.incoming.id)
+  assert.equal(f.context.queueIndex.value, 1)
+  // Sanity: the token mapping alone (index 0 → outgoing row) is what the id
+  // path just overruled, so without queueItemId this info would have mapped
+  // back onto the outgoing row.
+  assert.equal(loader.findLogicalIndex({ queueIndex: 0, queueToken: 'stale-window' }, f.context.queue.value), 0)
+})
+
 function handoffFixture(t) {
   const outgoing = {
     id: 'outgoing',

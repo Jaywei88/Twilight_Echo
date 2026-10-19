@@ -72,6 +72,18 @@ export class NativeQueueLoader {
   ): Promise<void> {
     this.clear()
     const commit = await api.loadQueue(prepared.items, prepared.startIndex)
+    if (!commit?.queueToken) {
+      // TEMP DIAGNOSTIC: without a token the renderer cannot map native indices
+      // back to logical entries and the playbar stops following auto-advance.
+      console.warn(
+        '[native-queue] load returned no token',
+        JSON.stringify({
+          items: prepared.items.length,
+          startIndex: prepared.startIndex,
+          commit: commit ?? null
+        })
+      )
+    }
     if (commit?.queueToken) {
       this.committed = {
         json: JSON.stringify(prepared.items),
@@ -101,6 +113,22 @@ export class NativeQueueLoader {
 
   hasWindow(): boolean {
     return this.committed?.window === true
+  }
+
+  /** Diagnostics only: what the renderer believes the engine holds. */
+  describe(): {
+    token: string
+    window: boolean
+    entries: Array<{ id: string; index: number } | null>
+  } | null {
+    if (!this.committed) return null
+    return {
+      token: this.committed.token.slice(0, 8),
+      window: this.committed.window,
+      entries: this.committed.entries.map((entry) =>
+        entry ? { id: entry.id, index: entry.index } : null
+      )
+    }
   }
 
   playMode(mode: PlayMode) {

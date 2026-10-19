@@ -1810,10 +1810,23 @@ export class PlaybackController {
   private playbackSnapshot(): PlaybackInfo {
     // A stale native sample must not inherit authority from a newly loaded queue.
     const indexed = this.queue[this.playbackInfo.queueIndex]
+    const playingSource = this.playbackInfo.source
+    // Resolve the playing item by source, not by index: for a partial native
+    // queue the index is window-relative and can lag the advance by a tick,
+    // while the id stays stable for the renderer's logical queue. The indexed
+    // row still wins when it matches, because CUE segments share one source and
+    // only the index tells them apart.
+    const playingItem =
+      indexed && indexed.source === playingSource
+        ? indexed
+        : playingSource
+          ? (this.queue.find((item) => item.source === playingSource) ?? null)
+          : null
     return {
       ...this.playbackInfo,
       nativePlaybackActive: this.nativePlaybackActive,
-      queueToken: indexed?.source === this.playbackInfo.source ? this.queueToken : undefined
+      queueToken: indexed?.source === playingSource ? this.queueToken : undefined,
+      queueItemId: playingItem?.id
     }
   }
 

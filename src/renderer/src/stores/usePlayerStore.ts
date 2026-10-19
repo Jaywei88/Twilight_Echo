@@ -1350,9 +1350,23 @@ function patchTrackInQueues(updatedTrack: Track): void {
 }
 
 function findTrackIndexFromPlaybackInfo(info: NativePlaybackInfo): number {
-  const logicalIndex =
+  // The engine's queue index is window-relative for partial queues and its
+  // source may be a re-signed provider URL. The committed window mapping is
+  // the only signal that tells apart duplicate rows and CUE segments sharing
+  // one source, so keep it first while the main-resolved track id agrees with
+  // the entry it selects. A window the engine has since reloaded (loudnorm
+  // requeue at a track boundary) selects a different id and must not win over
+  // identity by id, which is the only mapping that survives that requeue.
+  const nativeItemId = typeof info.queueItemId === 'string' ? info.queueItemId.trim() : ''
+  const tokenIndex =
     playMode.value !== 'heart' ? nativeQueueLoader.findLogicalIndex(info, queue.value) : -1
-  if (logicalIndex >= 0) return logicalIndex
+  if (tokenIndex >= 0 && (!nativeItemId || queue.value[tokenIndex]?.id === nativeItemId)) {
+    return tokenIndex
+  }
+  if (nativeItemId) {
+    const byId = findQueueIndexByTrackId(queue.value, nativeItemId, queueIndex.value)
+    if (byId >= 0) return byId
+  }
   const mappedTrackId =
     typeof info.source === 'string' && info.source.length > 0
       ? nativeSourceToTrackId.get(info.source)
@@ -1364,6 +1378,19 @@ function findTrackIndexFromPlaybackInfo(info: NativePlaybackInfo): number {
     mappedTrackId,
     nativeQueueDelegated && nativeQueueSyncRequest === null
   )
+}
+
+function findQueueIndexByTrackId(
+  tracks: readonly Track[],
+  trackId: string,
+  nearIndex: number
+): number {
+  let best = -1
+  for (let index = 0; index < tracks.length; index += 1) {
+    if (tracks[index]?.id !== trackId) continue
+    if (best < 0 || Math.abs(index - nearIndex) < Math.abs(best - nearIndex)) best = index
+  }
+  return best
 }
 
 function isCurrentTrackNativePlaybackInfo(info: NativePlaybackInfo): boolean {
@@ -1448,6 +1475,32 @@ function applyNativePlaybackInfo(
   if (shouldIgnoreNativePlaybackInfo(info, infoIndex)) return false
 
   const normalizedInfo = normalizeNativePlaybackInfo(info)
+  if (infoIndex < 0 && info.source && info.state === 'playing') {
+    // TEMP DIAGNOSTIC: an unresolvable native identity leaves the playbar on the
+    // outgoing track while the engine already plays the next one.
+    const committed = nativeQueueLoader.describe()
+    const entry = committed?.entries[info.queueIndex] ?? null
+    const entryTrack = entry ? queue.value[entry.index] : undefined
+    console.warn(
+      '[native-info] unresolved track',
+      JSON.stringify({
+        queueIndex: info.queueIndex,
+        queueItemId: info.queueItemId ?? null,
+        infoTokenPresent: !!info.queueToken,
+        committedToken: committed?.token ?? null,
+        window: committed?.window ?? null,
+        entry,
+        entryTrackId: entryTrack?.id ?? null,
+        entryTrackEntryId: entryTrack?.queueEntryId ?? null,
+        queueLength: queue.value.length,
+        currentIndex: queueIndex.value,
+        source: info.source.slice(0, 100),
+        sourceMatchIndex: queue.value.findIndex(
+          (track) => getTrackAudioSource(track) === info.source
+        )
+      })
+    )
+  }
   playbackInfo.value = normalizedInfo
   if (typeof (info as { streamTitle?: string }).streamTitle === 'string') {
     streamNowPlaying.value = (info as { streamTitle?: string }).streamTitle?.trim() ?? ''
