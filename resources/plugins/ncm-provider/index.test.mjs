@@ -439,15 +439,12 @@ test('token bucket survives a system clock rollback without wedging requests', a
   }
 })
 
-test('search waits out a NetEase 405 cooldown and retries instead of returning empty', async () => {
-  const requestTimes = []
+test('search fails fast on a NetEase 405 and skips upstream during the cooldown', async () => {
   let calls = 0
-  const provider = await activateProvider(async (path) => {
-    const url = parseRequest(path)
-    assert.equal(url.pathname, '/cloudsearch')
+  let limited = true
+  const provider = await activateProvider(async () => {
     calls += 1
-    requestTimes.push(Date.now())
-    if (calls === 1) {
+    if (limited) {
       return { code: 405, msg: '操作频繁，请稍后再试', message: '操作频繁，请稍后再试' }
     }
     return { result: { songs: [song(42)], songCount: 1 } }
@@ -456,60 +453,67 @@ test('search waits out a NetEase 405 cooldown and retries instead of returning e
   try {
     mock.timers.enable({ apis: ['Date', 'setTimeout'] })
     mock.timers.setTime(1_000_000)
-    const pending = provider.searchSongs('moon river')
-    await new Promise((resolve) => setImmediate(resolve))
-    await new Promise((resolve) => setImmediate(resolve))
-    assert.equal(requestTimes.length, 1)
+    await assert.rejects(
+      provider.searchSongs('moon river'),
+      (error) => error.code === 'NCM_RATE_LIMITED'
+    )
+    assert.equal(calls, 1, 'the 405 is surfaced without a retry wait')
+
+    await assert.rejects(
+      provider.searchSongs('another query'),
+      (error) => error.code === 'NCM_RATE_LIMITED'
+    )
+    assert.equal(calls, 1, 'no upstream request is made while the cooldown is active')
+
+    limited = false
     mock.timers.tick(5_000)
-    const result = await pending
-    assert.equal(calls, 2)
+    const result = await provider.searchSongs('moon river')
+    assert.equal(calls, 2, 'search resumes after the cooldown expires')
     assert.equal(result.items.length, 1)
     assert.equal(result.items[0].title, 'song-42')
-    assert.ok(requestTimes[1] - requestTimes[0] >= 5_000)
   } finally {
     mock.timers.reset()
     ncmProvider.deactivate()
   }
 })
 
-test('concurrent searches share one 405 cooldown and all retry', async () => {
+test('concurrent searches fail fast on a shared 405 instead of queueing through cooldown', async () => {
   let calls = 0
   const provider = await activateProvider(async () => {
     calls += 1
-    if (calls <= 5) {
-      return { code: 405, msg: '操作频繁，请稍后再试', message: '操作频繁，请稍后再试' }
-    }
-    return { result: { songs: [song(calls)], songCount: 1 } }
+    return { code: 405, msg: '操作频繁，请稍后再试', message: '操作频繁，请稍后再试' }
   })
 
   try {
     mock.timers.enable({ apis: ['Date', 'setTimeout'] })
     mock.timers.setTime(1_000_000)
-    let results
-    let failure
-    const pending = Promise.all(
-      Array.from({ length: 12 }, (_, index) => provider.searchSongs(`q${index}`))
-    ).then(
-      (value) => {
-        results = value
-      },
-      (error) => {
-        failure = error
-      }
+    let settled = 0
+    const failures = []
+    const pending = Promise.allSettled(
+      Array.from({ length: 12 }, (_, index) =>
+        provider.searchSongs(`q${index}`).then(
+          () => {
+            settled += 1
+          },
+          (error) => {
+            settled += 1
+            failures.push(error)
+          }
+        )
+      )
     )
-    for (let step = 0; step < 40 && !results && !failure; step += 1) {
+    for (let step = 0; step < 40 && settled < 12; step += 1) {
       mock.timers.tick(500)
       await new Promise((resolve) => setImmediate(resolve))
     }
     await pending
-    if (failure) throw failure
-    assert.ok(results)
-    assert.equal(results.length, 12)
+    assert.equal(settled, 12)
+    assert.equal(failures.length, 12)
     assert.equal(
-      results.every((result) => result.items.length === 1),
+      failures.every((error) => error.code === 'NCM_RATE_LIMITED'),
       true
     )
-    assert.equal(calls, 17, 'five rejected attempts plus twelve successful retries')
+    assert.ok(calls <= 5, 'queued searches reject before reaching upstream')
   } finally {
     mock.timers.reset()
     ncmProvider.deactivate()

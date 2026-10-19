@@ -107,6 +107,16 @@ test('homepage section arguments cross IPC after provider metadata becomes react
   assert.deepEqual(received, [['daily'], ['rising']])
 })
 
+test('metadata-only providers stay out of the renderer provider picker', async () => {
+  const f = providerStoreFixture(async () => [
+    { id: 'ncm', name: 'NCM', capabilities: ['login'] },
+    { id: 'qq', name: 'QQ Music', capabilities: ['search'], ui: { metadataOnly: true } }
+  ])
+  await f.store.syncProviders()
+  assert.equal(f.store.hasProvider('ncm'), true)
+  assert.equal(f.store.hasProvider('qq'), false)
+})
+
 test('provider store exposes provider health metadata from the host', () => {
   assert.match(source, /export interface ProviderHealth/)
   assert.match(source, /health\?: ProviderHealth/)

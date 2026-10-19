@@ -234,9 +234,11 @@ test('normalizes provider UI metadata defaults and filters malformed sections', 
     ],
     streamingLibraryTab: undefined,
     streamingSearch: undefined,
+    metadataOnly: undefined,
     unifiedLibrary: undefined
   })
   assert.equal(normalizeProviderUi(undefined), undefined)
+  assert.equal(normalizeProviderUi({ metadataOnly: true })?.metadataOnly, true)
 })
 
 test('homepage presentation preserves public browsing and bounds provider copy', () => {

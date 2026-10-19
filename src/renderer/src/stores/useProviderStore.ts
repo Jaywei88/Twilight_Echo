@@ -61,6 +61,8 @@ export interface ProviderUiMetadata {
   streamingSections?: import('../../../shared/providerHome').ProviderStreamingSection[]
   streamingLibraryTab?: boolean
   streamingSearch?: boolean
+  /** 仅用于标签匹配等元数据检索，不进入音源选择与流媒体 UI */
+  metadataOnly?: boolean
   /** 接入统一音乐库切换器（资料卡音源下拉），不再占侧边栏独立条目 */
   unifiedLibrary?: boolean
 }
@@ -89,14 +91,16 @@ async function syncProviders(): Promise<void> {
         const revision = providerListRevision
         const list = await window.api.providers.list()
         if (revision !== providerListRevision) continue
-        providers.value = list.map((provider) => ({
-          id: provider.id,
-          name: provider.name,
-          capabilities: provider.capabilities,
-          supportedMethods: provider.supportedMethods ?? [],
-          ui: provider.ui as ProviderUiMetadata | undefined,
-          health: provider.health as ProviderHealth | undefined
-        }))
+        providers.value = list
+          .filter((provider) => provider.ui?.metadataOnly !== true)
+          .map((provider) => ({
+            id: provider.id,
+            name: provider.name,
+            capabilities: provider.capabilities,
+            supportedMethods: provider.supportedMethods ?? [],
+            ui: provider.ui as ProviderUiMetadata | undefined,
+            health: provider.health as ProviderHealth | undefined
+          }))
         return
       }
     } finally {

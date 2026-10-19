@@ -179,6 +179,8 @@ export interface MediaProvider {
   name: string
   source: 'internal' | 'plugin'
   capabilities: MediaProviderCapability[]
+  /** Metadata-only providers stay registered for tag matching but never surface in playback UI. */
+  metadataOnly?: boolean
   health?: MediaProviderHealth
   isEnabled?: () => boolean | Promise<boolean>
   getPlaybackUrl?: (track: Track, options?: PlaybackUrlOptions) => Promise<string | null>
@@ -495,8 +497,24 @@ export class MediaProviderRegistry {
     limit?: number
     offset?: number
     signal?: AbortSignal
+    /** Tag matching opts in to metadata-only sources; streaming search leaves them out. */
+    includeMetadataOnly?: boolean
+    providerIds?: string[]
+    excludeProviderIds?: string[]
+    /** Hard per-source deadline so one stalled provider cannot block the batch. */
+    providerTimeoutMs?: number
   }): Promise<UnifiedSearchResult> {
-    const providers = this.list()
+    const includeMetadataOnly = options.includeMetadataOnly === true
+    const allowedIds = options.providerIds
+      ? new Set(options.providerIds.map(normalizeProviderId))
+      : null
+    const excludedIds = new Set((options.excludeProviderIds ?? []).map(normalizeProviderId))
+    const providers = this.list().filter((provider) => {
+      if (provider.metadataOnly && !includeMetadataOnly) return false
+      if (allowedIds && !allowedIds.has(provider.id)) return false
+      return !excludedIds.has(provider.id)
+    })
+    const providerTimeoutMs = Math.max(0, Math.trunc(options.providerTimeoutMs ?? 0))
     return unifiedSearchSongs({
       ...options,
       providers: await Promise.all(
@@ -505,12 +523,51 @@ export class MediaProviderRegistry {
           name: provider.name,
           capabilities: provider.capabilities,
           available: await isProviderAvailable(provider),
+          metadataOnly: provider.metadataOnly === true,
           health: provider.health
         }))
       ),
       searchProviderSongs: (providerId, keywords, limit, offset) =>
-        this.searchSongs(providerId, keywords, limit, offset, { signal: options.signal })
+        this.searchSongsWithTimeout(
+          providerId,
+          keywords,
+          limit,
+          offset,
+          options.signal,
+          providerTimeoutMs
+        )
     })
+  }
+
+  private async searchSongsWithTimeout(
+    providerId: string,
+    keywords: string,
+    limit: number | undefined,
+    offset: number | undefined,
+    signal: AbortSignal | undefined,
+    timeoutMs: number
+  ): Promise<MediaProviderSearchResult<Track>> {
+    if (timeoutMs <= 0) return this.searchSongs(providerId, keywords, limit, offset, { signal })
+    if (signal?.aborted) throw new Error('Provider search was cancelled')
+    const controller = new AbortController()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort(new Error(`${providerId} 搜索超时`))
+        reject(new Error(`${providerId} 搜索超时`))
+      }, timeoutMs)
+    })
+    const onAbort = (): void => controller.abort(signal?.reason)
+    signal?.addEventListener('abort', onAbort, { once: true })
+    try {
+      return await Promise.race([
+        this.searchSongs(providerId, keywords, limit, offset, { signal: controller.signal }),
+        timeout
+      ])
+    } finally {
+      if (timer) clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+    }
   }
 
   async call<T>(

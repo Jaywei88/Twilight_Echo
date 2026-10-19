@@ -456,6 +456,8 @@ export interface TwilightProviderUiMetadata {
   streamingSections?: TwilightProviderStreamingSection[]
   streamingLibraryTab?: boolean
   streamingSearch?: boolean
+  /** 仅用于标签匹配等元数据检索，不参与播放/流媒体 UI */
+  metadataOnly?: boolean
   unifiedLibrary?: boolean
 }
 

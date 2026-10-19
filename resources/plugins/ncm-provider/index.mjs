@@ -401,9 +401,9 @@ const REQUEST_TOKEN_REFILL_PER_MS = 5 / 1000
 let requestTokenCount = REQUEST_TOKEN_BUCKET_CAPACITY
 let requestTokenRefillAt = Date.now()
 let requestTokenTail = Promise.resolve()
-// 网易云对搜索的风控会返回 HTTP/code 405「操作频繁」。命中后暂停所有上游
-// 请求并指数退避：并发的 12 个搜索同时撞上只会共享一次冷却窗口。只重试一次，
-// 避免重试风暴把短暂的限流放大成整批失败。
+// 网易云对搜索的风控会返回 HTTP/code 405「操作频繁」。命中后进入指数退避
+// （5s→30s）冷却，但搜索本身不在冷却中排队：批量标签匹配会立即失败并切到
+// QQ/酷我/iTunes 等回退源，避免每首歌都卡满冷却窗口。
 const RATE_LIMIT_MESSAGE_PATTERN =
   /操作频繁|请求过于频繁|too many requests|too frequent|rate.?limit/i
 const RATE_LIMIT_COOLDOWN_BASE_MS = 5_000
@@ -522,11 +522,27 @@ async function waitForRateLimitCooldown(signal) {
 
 async function request(path, cookie, requestContext) {
   throwIfRequestAborted(requestContext)
-  await waitForRateLimitCooldown(requestContext?.signal)
+  if (requestContext?.failFastOnRateLimit) {
+    // Batch metadata matching must hand off to other sources immediately instead
+    // of stalling every track through the shared 405 cooldown.
+    if (Date.now() < rateLimitResumeAt) {
+      throw createRateLimitError(`网易云风控冷却中，剩余 ${Math.ceil((rateLimitResumeAt - Date.now()) / 1000)} 秒`)
+    }
+  } else {
+    await waitForRateLimitCooldown(requestContext?.signal)
+  }
   await acquireRequestToken(requestContext?.signal)
   throwIfRequestAborted(requestContext)
-  // 排队取令牌期间可能已有并发请求触发风控，拿到令牌后必须再等一次。
-  await waitForRateLimitCooldown(requestContext?.signal)
+  // 排队取令牌期间可能已有并发请求触发风控，拿到令牌后必须再检查一次。
+  if (requestContext?.failFastOnRateLimit) {
+    if (Date.now() < rateLimitResumeAt) {
+      throw createRateLimitError(
+        `网易云风控冷却中，剩余 ${Math.ceil((rateLimitResumeAt - Date.now()) / 1000)} 秒`
+      )
+    }
+  } else {
+    await waitForRateLimitCooldown(requestContext?.signal)
+  }
   const requestStartedAt = Date.now()
   const data = await ncmApi.request(shouldUsePcUa(path) ? withPcUa(path) : path, cookie, {
     signal: requestContext?.signal,
@@ -599,18 +615,25 @@ async function requestOptionalAuth(path, requestContext) {
   return request(path, await getCookie(), requestContext)
 }
 
-async function requestOptionalAuthRead(path, { attempts = 2, label = path, signal } = {}) {
+async function requestOptionalAuthRead(
+  path,
+  { attempts = 2, label = path, signal, failFastOnRateLimit = false } = {}
+) {
   let lastError = null
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
-      return await requestOptionalAuth(path, { signal })
+      return await requestOptionalAuth(path, { signal, failFastOnRateLimit })
     } catch (error) {
       lastError = error
+      if (failFastOnRateLimit && isRateLimitError(error)) break
       if (attempt >= attempts || !isReadApiTransientError(error)) break
       await waitWithAbort(250 * attempt, signal)
     }
   }
-  getContext().logger.warn(`网易云读取接口失败：${label}：${getErrorMessage(lastError)}`)
+  // 批量匹配会为每首歌触发一次搜索；冷却期间由调用方切到回退源，不再逐次刷日志。
+  if (!(failFastOnRateLimit && isRateLimitError(lastError))) {
+    getContext().logger.warn(`网易云读取接口失败：${label}：${getErrorMessage(lastError)}`)
+  }
   throw lastError
 }
 
@@ -2366,7 +2389,8 @@ async function searchSongs(keywords, limit = 30, offset = 0, requestContext) {
     {
       attempts: SEARCH_READ_ATTEMPTS,
       label: `search ${keywords}`,
-      signal: requestContext?.signal
+      signal: requestContext?.signal,
+      failFastOnRateLimit: true
     }
   )
   const result = data.result || data.data?.result || {}

@@ -438,3 +438,41 @@ test('enrichLocalTrackMetadata preserves existing lyric source labels', () => {
   assert.equal(enriched.translatedLyrics, '[00:00.00]Provider translation')
   assert.equal(enriched.translatedLyricsSource, 'provider')
 })
+
+test('matched candidates label known fallback sources for the review list', () => {
+  const local = {
+    id: 'local:1',
+    title: 'Moon River',
+    artist: 'Audrey',
+    album: 'Album',
+    filePath: 'D:/Music/Moon River.flac',
+    fileName: 'Moon River.flac',
+    duration: 180,
+    size: 1,
+    cover: null,
+    lyrics: null,
+    source: 'local'
+  }
+  const candidate = (source: string) => ({
+    id: `${source}:1`,
+    title: 'Moon River',
+    artist: 'Audrey',
+    album: 'Album',
+    filePath: `${source}:1`,
+    fileName: 'Moon River',
+    duration: 180,
+    size: 0,
+    cover: null,
+    lyrics: null,
+    source
+  })
+
+  const labels = buildMetadataMatchCandidates(local, [
+    candidate('qq'),
+    candidate('kuwo'),
+    candidate('itunes'),
+    candidate('custom')
+  ]).map((entry) => entry.sourceLabel)
+
+  assert.deepEqual(new Set(labels), new Set(['QQ音乐', '酷我音乐', 'iTunes', 'custom']))
+})

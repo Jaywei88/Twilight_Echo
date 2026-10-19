@@ -41,6 +41,13 @@ const METADATA_PLACEHOLDERS = new Set([
   '未知专辑'
 ])
 
+const SOURCE_LABELS: Record<string, string> = {
+  ncm: '网易云音乐',
+  qq: 'QQ音乐',
+  kuwo: '酷我音乐',
+  itunes: 'iTunes'
+}
+
 export function isMetadataPlaceholder(value: string | null | undefined): boolean {
   const text = normalizeMetadataText(value ?? '')
   return !text || METADATA_PLACEHOLDERS.has(text)
@@ -101,7 +108,7 @@ export function buildMetadataMatchCandidates(
       return {
         ...match,
         providerId,
-        sourceLabel: providerId || 'unknown',
+        sourceLabel: SOURCE_LABELS[providerId] || providerId || 'unknown',
         fills: {
           cover: !metadataAvailable(localTrack.cover) && metadataAvailable(candidate.cover),
           lyrics: !metadataAvailable(localTrack.lyrics) && metadataAvailable(candidate.lyrics),

@@ -123,9 +123,6 @@ export function hasMatchedTagPatch(patch: LocalLibraryTagPatch): boolean {
 
 export const AUTO_APPLY_MIN_SCORE = 80
 export const BATCH_MATCH_CANDIDATE_LIMIT = 8
-// 连续多次搜索都只拿到 405 时继续跑完整批只会逐首失败；熔断并把已完成的
-// 结果留在界面上，用户稍后重跑即可。
-export const BATCH_MATCH_RATE_LIMIT_STREAK = 6
 
 export function shouldAutoApplyMatch(candidate: MetadataMatchCandidate): boolean {
   return candidate.score >= AUTO_APPLY_MIN_SCORE

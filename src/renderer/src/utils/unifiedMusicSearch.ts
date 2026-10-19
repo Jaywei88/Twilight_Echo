@@ -20,6 +20,8 @@ export interface UnifiedSearchProvider {
   name: string
   capabilities: string[] | MediaProviderCapability[]
   available?: boolean
+  /** Metadata-only providers are filtered before this layer; kept for diagnostics. */
+  metadataOnly?: boolean
   health?: UnifiedSearchProviderReliabilityInput
 }
 
@@ -99,8 +101,9 @@ export async function unifiedSearchSongs(
   const providerItems = (
     await Promise.all(
       options.providers.map(async (provider) => {
-        const providerAvailable =
-          provider.available !== false && provider.health?.available !== false
+        // `available` reflects plugin enablement; transient API health must not
+        // lock a source out of the next search, especially during batch matching.
+        const providerAvailable = provider.available !== false
         const providerReliability = getProviderReliability(provider)
         const searchable = provider.capabilities.includes('search')
         const playbackUrlHealth = provider.health?.methodStats?.getPlaybackUrl
@@ -178,5 +181,5 @@ function getProviderReliability(provider: UnifiedSearchProvider): number {
   if (typeof playbackUrlSuccessRate === 'number') return clampReliability(playbackUrlSuccessRate)
   if (typeof provider.health?.successRate === 'number')
     return clampReliability(provider.health.successRate)
-  return provider.available === false || provider.health?.available === false ? 0 : 1
+  return provider.available === false ? 0 : 1
 }

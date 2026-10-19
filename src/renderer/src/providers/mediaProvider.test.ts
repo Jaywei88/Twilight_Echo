@@ -688,3 +688,110 @@ test('renderer provider calls refresh host health snapshots after IPC settles', 
   assert.match(source, /void refreshPluginProviderHealth\(\)/)
   assert.match(source, /finally \{\s*void refreshPluginProviderHealth\(\)/)
 })
+
+function providerSearchTrack(id: string, source: string) {
+  return {
+    id,
+    title: 'Moon River',
+    artist: 'Audrey',
+    album: 'Album',
+    filePath: id,
+    fileName: 'Moon River',
+    duration: 180,
+    size: 0,
+    cover: null,
+    lyrics: null,
+    source
+  }
+}
+
+test('metadata-only providers stay out of streaming search and opt in for tag matching', async () => {
+  const registry = new MediaProviderRegistry()
+  const called: string[] = []
+  const register = (id: string, metadataOnly: boolean): void => {
+    registry.register({
+      id,
+      name: id,
+      source: 'plugin',
+      capabilities: ['search'],
+      metadataOnly,
+      searchSongs: async () => {
+        called.push(id)
+        return { items: [providerSearchTrack(`${id}:1`, id)], total: 1 }
+      }
+    })
+  }
+  register('ncm', false)
+  register('qq', true)
+  register('kuwo', true)
+  register('itunes', true)
+
+  const streaming = await registry.searchAllSongs({ query: 'moon', localTracks: [] })
+  assert.deepEqual(called, ['ncm'])
+  assert.deepEqual(Object.keys(streaming.health), ['ncm'])
+
+  called.length = 0
+  const primary = await registry.searchAllSongs({
+    query: 'moon',
+    localTracks: [],
+    includeMetadataOnly: true,
+    excludeProviderIds: ['itunes'],
+    providerTimeoutMs: 1_000
+  })
+  assert.deepEqual([...called].sort(), ['kuwo', 'ncm', 'qq'])
+  assert.deepEqual(
+    primary.items.map((item) => item.track.id).sort(),
+    ['kuwo:1', 'ncm:1', 'qq:1']
+  )
+
+  called.length = 0
+  const itunesFallback = await registry.searchAllSongs({
+    query: 'moon',
+    localTracks: [],
+    includeMetadataOnly: true,
+    providerIds: ['itunes'],
+    providerTimeoutMs: 1_000
+  })
+  assert.deepEqual(called, ['itunes'])
+  assert.deepEqual(
+    itunesFallback.items.map((item) => item.track.id),
+    ['itunes:1']
+  )
+})
+
+test('per-provider timeouts let fallback sources finish when one source stalls', async () => {
+  const registry = new MediaProviderRegistry()
+  registry.register({
+    id: 'ncm',
+    name: 'NetEase',
+    source: 'plugin',
+    capabilities: ['search'],
+    searchSongs: () => new Promise(() => undefined)
+  })
+  registry.register({
+    id: 'qq',
+    name: 'QQ Music',
+    source: 'plugin',
+    capabilities: ['search'],
+    metadataOnly: true,
+    searchSongs: async () => ({
+      items: [providerSearchTrack('qq:1', 'qq')],
+      total: 1
+    })
+  })
+
+  const startedAt = Date.now()
+  const result = await registry.searchAllSongs({
+    query: 'moon',
+    localTracks: [],
+    includeMetadataOnly: true,
+    providerTimeoutMs: 40
+  })
+
+  assert.deepEqual(
+    result.items.map((item) => item.track.id),
+    ['qq:1']
+  )
+  assert.equal(result.health.qq.resultCount, 1)
+  assert.ok(Date.now() - startedAt < 2_000)
+})

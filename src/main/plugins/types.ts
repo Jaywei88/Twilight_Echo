@@ -301,6 +301,11 @@ export interface TwilightProviderUiMetadata {
   /** 是否在流媒体页显示"搜索"功能 */
   streamingSearch?: boolean
   /**
+   * 仅用于标签匹配等元数据检索，不参与播放/流媒体 UI。
+   * 宿主仍会注册该 provider，但统一搜索默认跳过，音源列表也不展示。
+   */
+  metadataOnly?: boolean
+  /**
    * 是否接入统一的"音乐库"切换器（个人资料卡上的音源下拉）。
    * 设为 true 的 provider 会出现在音乐库下拉中，与网易云音乐并列切换，
    * 不再在侧边栏占据独立条目；未设置或为 false 的 provider 仍以独立

@@ -222,6 +222,7 @@ export function normalizeProviderUi(raw: unknown): TwilightMediaProviderRegistra
       typeof record.streamingLibraryTab === 'boolean' ? record.streamingLibraryTab : undefined,
     streamingSearch:
       typeof record.streamingSearch === 'boolean' ? record.streamingSearch : undefined,
+    metadataOnly: typeof record.metadataOnly === 'boolean' ? record.metadataOnly : undefined,
     unifiedLibrary: typeof record.unifiedLibrary === 'boolean' ? record.unifiedLibrary : undefined
   }
 }

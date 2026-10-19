@@ -82,6 +82,7 @@ export function setupPluginIpc(): void {
   })
   const bundledPluginIds = [
     'com.twilightecho.provider.ncm',
+    'com.twilightecho.provider.metadata',
     THEME_WORKSHOP_ID,
     MUSIC_TAG_WORKSHOP_ID
   ]
@@ -102,6 +103,11 @@ export function setupPluginIpc(): void {
       {
         id: bundledPluginIds[0],
         sourcePath: bundledPluginPath('ncm-provider'),
+        defaultEnabled: true
+      },
+      {
+        id: bundledPluginIds[1],
+        sourcePath: bundledPluginPath('metadata-providers'),
         defaultEnabled: true
       },
       {

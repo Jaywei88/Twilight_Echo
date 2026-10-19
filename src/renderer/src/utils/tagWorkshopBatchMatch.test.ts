@@ -4,7 +4,6 @@ import type { MetadataMatchCandidate } from './musicMetadataMatching.ts'
 import {
   BATCH_MATCH_CANDIDATE_LIMIT,
   BATCH_MATCH_CONCURRENCY,
-  BATCH_MATCH_RATE_LIMIT_STREAK,
   buildMatchedTagPatch,
   DEFAULT_TAG_MATCH_FIELDS,
   forEachWithConcurrency,
@@ -130,7 +129,6 @@ test('merged candidate lists are capped for the review dialog', () => {
     capped.map((entry) => entry.score),
     [81, 80, 79, 78, 77, 76, 75, 74]
   )
-  assert.equal(BATCH_MATCH_RATE_LIMIT_STREAK, 6)
 })
 
 test('default batch match selection covers common metadata, cover and lyrics', () => {

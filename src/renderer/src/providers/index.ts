@@ -140,6 +140,7 @@ export async function syncPluginProviders(): Promise<void> {
           mediaProviders.update(provider.id, {
             name: provider.name,
             capabilities: provider.capabilities,
+            metadataOnly: provider.ui?.metadataOnly === true,
             health: provider.health as MediaProviderHealth | undefined,
             isEnabled: () => isPluginProviderEnabled(provider.health),
             searchAlbums
@@ -151,6 +152,7 @@ export async function syncPluginProviders(): Promise<void> {
           name: provider.name,
           source: 'plugin',
           capabilities: provider.capabilities,
+          metadataOnly: provider.ui?.metadataOnly === true,
           health: provider.health as MediaProviderHealth | undefined,
           isEnabled: () => isPluginProviderEnabled(provider.health),
           getPlaybackUrl: provider.capabilities.includes('playbackUrl')
