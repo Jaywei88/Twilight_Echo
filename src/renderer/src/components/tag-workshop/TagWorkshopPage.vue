@@ -9,8 +9,17 @@ import { useTagWorkshopLaunch } from '@renderer/stores/useTagWorkshopLaunch'
 import type { Track } from '@renderer/types/music'
 import {
   buildMetadataMatchCandidates,
+  buildMetadataSearchQueries,
   type MetadataMatchCandidate
 } from '@renderer/utils/musicMetadataMatching'
+import {
+  buildMatchedTagPatch,
+  DEFAULT_TAG_MATCH_FIELDS,
+  hasMatchedTagPatch,
+  shouldAutoApplyMatch,
+  TAG_MATCH_FIELD_DEFINITIONS,
+  type TagMatchField
+} from '@renderer/utils/tagWorkshopBatchMatch'
 import {
   hasTagPatch,
   successfulTagPaths,
@@ -41,6 +50,21 @@ import type {
 } from '../../../../shared/localLibraryTags.ts'
 import type { LocalLibraryRenameItemResult } from '../../../../shared/localLibraryRename.ts'
 import { MUSIC_TAG_WORKSHOP_MAX_ITEMS } from '../../../../shared/musicTagWorkshop.ts'
+
+type BatchMatchStatus = 'pending' | 'applied' | 'review' | 'noMatch' | 'failed'
+
+interface BatchMatchTrackResult {
+  trackId: string
+  filePath: string
+  fileName: string
+  title: string
+  artist: string
+  status: BatchMatchStatus
+  candidates: MetadataMatchCandidate[]
+  patch?: LocalLibraryTagPatch
+  candidateLabel?: string
+  message?: string
+}
 
 type FieldKey =
   | 'title'
@@ -185,16 +209,24 @@ const restoring = ref(false)
 let removeProgressListener: (() => void) | undefined
 let readRequest = 0
 
-const matchQuery = ref('')
-const matching = ref(false)
-const matchSearched = ref(false)
-const matchError = ref('')
-const matchNotice = ref('')
-const matchCandidates = shallowRef<MetadataMatchCandidate[]>([])
-const applyingCoverKey = ref('')
-const applyingLyricsKey = ref('')
-let matchRequest = 0
-let matchAbort: AbortController | null = null
+const matchFieldIncluded = reactive(
+  Object.fromEntries(
+    TAG_MATCH_FIELD_DEFINITIONS.map((field) => [
+      field.key,
+      DEFAULT_TAG_MATCH_FIELDS.has(field.key)
+    ])
+  ) as Record<TagMatchField, boolean>
+)
+const batchMatching = ref(false)
+const batchWriting = ref(false)
+const batchMatchDone = ref(false)
+const batchMatchError = ref('')
+const batchMatchNotice = ref('')
+const batchMatchProgress = reactive({ current: 0, total: 0, label: '' })
+const batchResults = ref<BatchMatchTrackResult[]>([])
+const applyingReviewKey = ref('')
+let batchMatchRun = 0
+let batchMatchAbort: AbortController | null = null
 
 const tagPattern = ref('{artist} - {title}')
 const tagPatternError = ref('')
@@ -241,6 +273,27 @@ const progressFileName = computed(() => {
   const normalized = filePath.replace(/\\/g, '/')
   return normalized.slice(normalized.lastIndexOf('/') + 1)
 })
+const selectedMatchFields = computed(
+  () =>
+    new Set(
+      TAG_MATCH_FIELD_DEFINITIONS.map((field) => field.key).filter(
+        (key) => matchFieldIncluded[key]
+      )
+    )
+)
+const matchFieldCount = computed(() => selectedMatchFields.value.size)
+const reviewEntries = computed(() =>
+  batchResults.value.filter((entry) => entry.status === 'review')
+)
+const appliedEntries = computed(() =>
+  batchResults.value.filter((entry) => entry.status === 'applied')
+)
+const unmatchedEntries = computed(() =>
+  batchResults.value.filter((entry) => entry.status === 'noMatch')
+)
+const failedMatchEntries = computed(() =>
+  batchResults.value.filter((entry) => entry.status === 'failed')
+)
 
 const patchPreview = computed(() => {
   const built = buildPatch()
@@ -316,6 +369,7 @@ watch(selectedIds, () => {
   renameError.value = ''
   renameNotice.value = ''
   renameResults.value = []
+  resetBatchMatch()
 })
 watch(
   () => singleTrack.value?.id,
@@ -336,7 +390,7 @@ function resetEditor(): void {
   Object.assign(fieldValues, blankValues())
   Object.assign(fieldIncluded, blankIncluded())
   resetCover()
-  resetMatch()
+  resetBatchMatch()
   resetFilenameTools()
   readError.value = ''
   formError.value = ''
@@ -357,18 +411,20 @@ function resetFilenameTools(): void {
   renameResults.value = []
 }
 
-function resetMatch(): void {
-  matchAbort?.abort()
-  matchAbort = null
-  matchRequest += 1
-  matching.value = false
-  matchSearched.value = false
-  matchError.value = ''
-  matchNotice.value = ''
-  matchCandidates.value = []
-  applyingCoverKey.value = ''
-  applyingLyricsKey.value = ''
-  matchQuery.value = ''
+function resetBatchMatch(): void {
+  batchMatchAbort?.abort()
+  batchMatchAbort = null
+  batchMatchRun += 1
+  batchMatching.value = false
+  batchWriting.value = false
+  batchMatchDone.value = false
+  batchMatchError.value = ''
+  batchMatchNotice.value = ''
+  batchResults.value = []
+  applyingReviewKey.value = ''
+  batchMatchProgress.current = 0
+  batchMatchProgress.total = 0
+  batchMatchProgress.label = ''
 }
 
 function resetCover(): void {
@@ -400,12 +456,16 @@ function applySnapshot(tags: LocalLibraryTagSnapshot): void {
       : null
 }
 
-async function loadSelectedSnapshot(): Promise<void> {
+async function loadSelectedSnapshot(
+  { preserveMatchState = false }: { preserveMatchState?: boolean } = {}
+): Promise<void> {
   const track = singleTrack.value
-  resetEditor()
-  resetDuplicates()
+  if (!preserveMatchState) {
+    resetEditor()
+    resetDuplicates()
+  }
   if (!track) return
-  matchQuery.value = [track.title, track.artist].filter(Boolean).join(' ')
+  readError.value = ''
   tagPattern.value =
     guessFilenamePattern(filenameStem(trackFileName(track))) ?? '{artist} - {title}'
   const request = ++readRequest
@@ -529,148 +589,307 @@ function candidateKey(candidate: MetadataMatchCandidate): string {
   return `${candidate.providerId}:${candidate.track.id}`
 }
 
-async function searchOnlineMatches(): Promise<void> {
-  const track = singleTrack.value
-  if (!track || busy.value || matching.value) return
-  const keyword = matchQuery.value.trim() || [track.title, track.artist].filter(Boolean).join(' ')
-  if (!keyword) return
-  matchAbort?.abort()
+function isAppliedMatch(entry: BatchMatchTrackResult): boolean {
+  return entry.status === 'applied'
+}
+
+interface MatchedTagExtras {
+  coverData?: Uint8Array
+  lyrics?: string
+}
+
+async function loadMatchedExtras(
+  candidate: MetadataMatchCandidate,
+  fields: ReadonlySet<TagMatchField>,
+  signal?: AbortSignal
+): Promise<MatchedTagExtras> {
+  const extras: MatchedTagExtras = {}
+  const tasks: Array<Promise<void>> = []
+  if (fields.has('cover') && candidate.track.cover) {
+    tasks.push(
+      (async () => {
+        try {
+          const cover = await window.api.data.readCoverBytes(
+            candidate.track.cover ?? '',
+            candidate.track.coverSource
+          )
+          if (cover?.data.length) extras.coverData = cover.data
+        } catch {
+          // Metadata still applies when the cover cannot be fetched.
+        }
+      })()
+    )
+  }
+  if (fields.has('lyrics')) {
+    tasks.push(
+      (async () => {
+        try {
+          const lyrics = await mediaProviders.resolveLyrics(candidate.track, {
+            timeoutMs: 10_000,
+            signal
+          })
+          const text = lyrics.lyrics || lyrics.translatedLyrics || lyrics.wordLyrics || ''
+          if (text.trim()) extras.lyrics = text
+        } catch {
+          // Metadata still applies when lyrics cannot be fetched.
+        }
+      })()
+    )
+  }
+  await Promise.all(tasks)
+  return extras
+}
+
+async function buildPatchForMatch(
+  candidate: MetadataMatchCandidate,
+  fields: ReadonlySet<TagMatchField>,
+  signal?: AbortSignal
+): Promise<LocalLibraryTagPatch> {
+  const extras = await loadMatchedExtras(candidate, fields, signal)
+  return buildMatchedTagPatch(candidate, fields, extras)
+}
+
+function batchSummaryText(): string {
+  const applied = appliedEntries.value.length
+  const review = reviewEntries.value.length
+  const unmatched = unmatchedEntries.value.length
+  const failed = failedMatchEntries.value.length
+  const parts: string[] = []
+  if (applied > 0) parts.push(`已自动写入 ${applied} 首`)
+  if (review > 0) parts.push(`${review} 首需确认`)
+  if (unmatched > 0) parts.push(`${unmatched} 首未找到匹配`)
+  if (failed > 0) parts.push(`${failed} 首匹配失败`)
+  return parts.length > 0 ? `${parts.join(' · ')}。` : '没有需要处理的歌曲。'
+}
+
+function cancelBatchMatch(): void {
+  batchMatchAbort?.abort()
+}
+
+async function runBatchMatch(): Promise<void> {
+  if (batchMatching.value || busy.value) return
+  const tracks = [...selectedTracks.value]
+  if (tracks.length === 0) return
+  const fields = selectedMatchFields.value
+  if (fields.size === 0) {
+    batchMatchError.value = '请至少选择一种标签类型'
+    return
+  }
+  resetBatchMatch()
+  const run = batchMatchRun
   const controller = new AbortController()
-  matchAbort = controller
-  const request = ++matchRequest
-  matching.value = true
-  matchError.value = ''
-  matchNotice.value = ''
-  matchSearched.value = false
-  matchCandidates.value = []
+  batchMatchAbort = controller
+  batchMatching.value = true
+  batchMatchProgress.total = tracks.length
+  batchMatchProgress.current = 0
+  batchMatchProgress.label = ''
+  batchMatchError.value = ''
+  batchMatchNotice.value = ''
+  const slots: Array<BatchMatchTrackResult | undefined> = new Array(tracks.length)
+  let cursor = 0
+  let completed = 0
   try {
     await syncPluginProviders()
-    const result = await mediaProviders.searchAllSongs({
-      query: keyword,
-      localTracks: [],
-      limit: 40,
-      offset: 0,
-      signal: controller.signal
-    })
-    if (request !== matchRequest) return
-    const candidates = buildMetadataMatchCandidates(
-      track,
-      result.items.map((item) => item.track)
+    if (run !== batchMatchRun) return
+    const worker = async (): Promise<void> => {
+      while (!controller.signal.aborted && run === batchMatchRun) {
+        const index = cursor
+        cursor += 1
+        if (index >= tracks.length) return
+        const track = tracks[index]
+        batchMatchProgress.label = trackFileName(track)
+        const base: Omit<BatchMatchTrackResult, 'status'> = {
+          trackId: track.id,
+          filePath: track.filePath,
+          fileName: trackFileName(track),
+          title: track.title,
+          artist: track.artist,
+          candidates: []
+        }
+        try {
+          const searchQuery = buildMetadataSearchQueries(track)[0] ?? ''
+          if (!searchQuery) throw new Error('缺少可搜索的标题')
+          const search = await mediaProviders.searchAllSongs({
+            query: searchQuery,
+            localTracks: [],
+            limit: 20,
+            offset: 0,
+            signal: controller.signal
+          })
+          if (controller.signal.aborted || run !== batchMatchRun) return
+          const candidates = buildMetadataMatchCandidates(
+            track,
+            search.items.map((item) => item.track)
+          ).slice(0, 8)
+          if (candidates.length === 0) {
+            slots[index] = { ...base, status: 'noMatch' }
+            continue
+          }
+          const top = candidates[0]
+          if (shouldAutoApplyMatch(top)) {
+            const patch = await buildPatchForMatch(top, fields, controller.signal)
+            if (controller.signal.aborted || run !== batchMatchRun) return
+            if (hasMatchedTagPatch(patch)) {
+              slots[index] = {
+                ...base,
+                status: 'pending',
+                candidates,
+                patch,
+                candidateLabel: top.sourceLabel
+              }
+            } else {
+              slots[index] = {
+                ...base,
+                status: 'review',
+                candidates,
+                message: '最高置信度结果没有可用的所选标签'
+              }
+            }
+          } else {
+            slots[index] = { ...base, status: 'review', candidates }
+          }
+        } catch (error) {
+          if (controller.signal.aborted || run !== batchMatchRun) return
+          slots[index] = {
+            ...base,
+            status: 'failed',
+            message: error instanceof Error ? error.message : '在线匹配失败'
+          }
+        } finally {
+          if (!controller.signal.aborted && run === batchMatchRun) {
+            completed += 1
+            batchMatchProgress.current = completed
+          }
+        }
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(3, tracks.length) }, () => worker()))
+    if (run !== batchMatchRun) return
+    batchResults.value = slots.filter(
+      (entry): entry is BatchMatchTrackResult => Boolean(entry)
     )
-    matchCandidates.value = candidates.slice(0, 30)
-    matchSearched.value = true
-    if (candidates.length === 0) matchNotice.value = '没有找到标题与艺术家都可信的在线匹配'
+    batchMatchDone.value = true
+    if (controller.signal.aborted) {
+      batchMatchNotice.value = `匹配已停止，已完成 ${batchResults.value.length} / ${tracks.length} 首。`
+      return
+    }
+    const automatic = batchResults.value.filter((entry) => entry.status === 'pending')
+    if (automatic.length > 0) await writeBatchMatchEntries(automatic)
+    if (run !== batchMatchRun) return
+    batchMatchNotice.value = batchSummaryText()
   } catch (error) {
-    if (request !== matchRequest || controller.signal.aborted) return
-    matchError.value = error instanceof Error ? error.message : '在线匹配失败'
+    if (run === batchMatchRun) {
+      batchMatchError.value = error instanceof Error ? error.message : '在线匹配失败'
+      batchMatchDone.value = true
+    }
   } finally {
-    if (request === matchRequest) {
-      matching.value = false
-      matchAbort = null
+    if (run === batchMatchRun) {
+      batchMatching.value = false
+      batchMatchAbort = null
     }
   }
 }
 
-function applyCandidateMetadata(candidate: MetadataMatchCandidate): void {
-  if (busy.value) return
-  const source = candidate.track
-  let applied = 0
-  const textFields: Array<[FieldKey, string | null | undefined]> = [
-    ['title', source.title],
-    ['artist', source.artist],
-    ['album', source.album],
-    ['albumArtist', source.albumArtist],
-    ['genre', source.genre ?? undefined]
-  ]
-  for (const [key, value] of textFields) {
-    const text = (value ?? '').trim()
-    if (!text) continue
-    fieldValues[key] = text
-    fieldIncluded[key] = true
-    applied += 1
+async function writeBatchMatchEntries(
+  entries: BatchMatchTrackResult[],
+  reviewed = false
+): Promise<void> {
+  if (entries.length === 0) return
+  batchWriting.value = true
+  busy.value = true
+  cancelRequested.value = false
+  progress.value = null
+  results.value = []
+  batchMatchError.value = ''
+  const id = crypto.randomUUID()
+  operationId.value = id
+  try {
+    const result = await window.api.library.writeTags({
+      operationId: id,
+      items: entries.map((entry) => ({ filePath: entry.filePath, ...(entry.patch ?? {}) }))
+    })
+    results.value = result.items
+    const byPath = new Map(entries.map((entry) => [tagWritePathKey(entry.filePath), entry]))
+    for (const item of result.items) {
+      const entry = byPath.get(tagWritePathKey(item.filePath))
+      if (!entry) continue
+      if (item.status === 'success') {
+        entry.status = 'applied'
+        entry.message = undefined
+        await syncBatchEntryLibrary(entry)
+      } else {
+        entry.status = reviewed ? 'review' : 'failed'
+        entry.message = item.message ?? '写入失败'
+      }
+    }
+    for (const entry of entries) {
+      if (entry.status === 'pending') {
+        entry.status = reviewed ? 'review' : 'failed'
+        entry.message = '文件未写入'
+      }
+    }
+    if (
+      singleTrack.value &&
+      entries.some((entry) => entry.trackId === singleTrack.value?.id && entry.status === 'applied')
+    ) {
+      await loadSelectedSnapshot({ preserveMatchState: true })
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '标签写入失败'
+    for (const entry of entries) {
+      entry.status = reviewed ? 'review' : 'failed'
+      entry.message = message
+    }
+    batchMatchError.value = message
+  } finally {
+    batchWriting.value = false
+    busy.value = false
+    operationId.value = null
+    progress.value = null
   }
-  const numericFields: Array<[FieldKey, number | undefined]> = [
-    ['track', source.trackNumber],
-    ['disc', source.discNumber]
-  ]
-  for (const [key, value] of numericFields) {
-    if (!Number.isInteger(value) || !value || value <= 0) continue
-    fieldValues[key] = String(value)
-    fieldIncluded[key] = true
-    applied += 1
-  }
-  const year = Number(source.releaseDate?.slice(0, 4) ?? '')
-  if (Number.isInteger(year) && year > 0) {
-    fieldValues.year = String(year)
-    fieldIncluded.year = true
-    applied += 1
-  }
-  renameArmed.value = false
-  matchNotice.value =
-    applied > 0
-      ? `已从 ${candidate.sourceLabel} 填入 ${applied} 个字段，确认后点击写入。`
-      : '这条匹配没有可用的元数据字段'
 }
 
-async function applyCandidateCover(candidate: MetadataMatchCandidate): Promise<void> {
-  if (busy.value) return
-  if (!candidate.track.cover) {
-    matchError.value = '这条匹配没有可用的封面'
+async function syncBatchEntryLibrary(entry: BatchMatchTrackResult): Promise<void> {
+  const patch = entry.patch
+  if (!patch) return
+  const { coverData, ...tagPatch } = patch
+  musicStore.applyLocalTagWrite([entry.filePath], tagPatch)
+  if (coverData) {
+    const handle = await window.api.data.cacheCover(coverData).catch(() => null)
+    musicStore.applyLocalCover([entry.filePath], handle)
+  }
+}
+
+async function applyReviewedMatch(
+  entry: BatchMatchTrackResult,
+  candidate: MetadataMatchCandidate
+): Promise<void> {
+  if (busy.value || batchMatching.value) return
+  const fields = selectedMatchFields.value
+  if (fields.size === 0) {
+    batchMatchError.value = '请至少选择一种标签类型'
     return
   }
   const key = candidateKey(candidate)
-  applyingCoverKey.value = key
-  matchError.value = ''
-  matchNotice.value = ''
+  applyingReviewKey.value = key
+  batchMatchError.value = ''
+  batchMatchNotice.value = ''
   try {
-    const cover = await window.api.data.readCoverBytes(
-      candidate.track.cover ?? '',
-      candidate.track.coverSource
-    )
-    if (!cover) throw new Error('无法获取这张封面，可能是不受支持的图片格式')
-    coverDraft.value = cover.data
-    coverDirty.value = true
-    coverPreview.value = bytesToDataUrl(cover.data, cover.mimeType)
-    coverError.value = ''
-    matchNotice.value = `已使用 ${candidate.sourceLabel} 封面，确认后点击写入。`
+    const patch = await buildPatchForMatch(candidate, fields)
+    if (!hasMatchedTagPatch(patch)) throw new Error('这条结果没有可用的所选标签')
+    entry.patch = patch
+    entry.candidateLabel = candidate.sourceLabel
+    entry.message = undefined
+    entry.status = 'pending'
+    await writeBatchMatchEntries([entry], true)
+    if (isAppliedMatch(entry)) {
+      batchMatchNotice.value = `已写入《${entry.title || entry.fileName}》。`
+    }
   } catch (error) {
-    matchError.value = error instanceof Error ? error.message : '无法获取在线封面'
+    entry.status = 'review'
+    entry.message = error instanceof Error ? error.message : '无法应用这条匹配'
   } finally {
-    if (applyingCoverKey.value === key) applyingCoverKey.value = ''
-  }
-}
-
-async function applyCandidateLyrics(candidate: MetadataMatchCandidate): Promise<void> {
-  if (busy.value) return
-  const key = candidateKey(candidate)
-  applyingLyricsKey.value = key
-  matchError.value = ''
-  matchNotice.value = ''
-  try {
-    const lyrics = await mediaProviders.resolveLyrics(candidate.track, { timeoutMs: 12_000 })
-    const text = lyrics.lyrics || lyrics.translatedLyrics || lyrics.wordLyrics || ''
-    if (!text.trim()) throw new Error('音源没有返回可用歌词')
-    fieldValues.lyrics = text
-    fieldIncluded.lyrics = true
-    matchNotice.value = `已获取 ${candidate.sourceLabel} 歌词，确认后点击写入。`
-  } catch (error) {
-    matchError.value = error instanceof Error ? error.message : '无法获取在线歌词'
-  } finally {
-    if (applyingLyricsKey.value === key) applyingLyricsKey.value = ''
-  }
-}
-
-async function applyCandidateAll(candidate: MetadataMatchCandidate): Promise<void> {
-  if (busy.value) return
-  applyCandidateMetadata(candidate)
-  const metadataNotice = matchNotice.value
-  const tasks: Array<Promise<void>> = [applyCandidateLyrics(candidate)]
-  if (candidate.track.cover) tasks.push(applyCandidateCover(candidate))
-  await Promise.all(tasks)
-  if (!matchError.value) {
-    matchNotice.value = `已从 ${candidate.sourceLabel} 填入在线资料，确认后点击写入。`
-  } else {
-    matchNotice.value = metadataNotice
+    if (applyingReviewKey.value === key) applyingReviewKey.value = ''
   }
 }
 
@@ -1095,91 +1314,155 @@ onBeforeUnmount(() => {
           </header>
           <p v-if="readError" class="tag-workshop-alert" role="alert">{{ readError }}</p>
 
-          <section v-if="singleTrack" class="tag-workshop-match" aria-label="在线匹配">
+          <section class="tag-workshop-match" aria-label="批量匹配标签">
             <header>
               <div>
-                <strong>在线匹配</strong>
-                <small>按标题与艺术家从已启用的音源查找元数据、封面与歌词</small>
+                <strong>批量匹配标签</strong>
+                <small>为所选歌曲自动查找最高置信度结果，置信度不足时才需要你确认</small>
               </div>
-              <div class="tag-workshop-match-search">
-                <input
-                  v-model="matchQuery"
-                  type="search"
-                  aria-label="在线匹配关键词"
-                  placeholder="标题 艺术家"
-                  :disabled="matching || busy"
-                  @keydown.enter.prevent="searchOnlineMatches"
-                />
-                <button type="button" :disabled="matching || busy" @click="searchOnlineMatches">
-                  {{ matching ? '匹配中…' : '搜索' }}
-                </button>
-              </div>
+              <button
+                type="button"
+                :disabled="busy || (!batchMatching && matchFieldCount === 0)"
+                @click="batchMatching ? cancelBatchMatch() : runBatchMatch()"
+              >
+                {{
+                  batchWriting
+                    ? '写入中…'
+                    : batchMatching
+                      ? '停止匹配'
+                      : batchMatchDone
+                        ? '重新匹配'
+                        : `匹配 ${selectedTracks.length} 首歌曲`
+                }}
+              </button>
             </header>
-            <p v-if="matchError" class="tag-workshop-alert" role="alert">{{ matchError }}</p>
-            <p v-else-if="matchNotice" class="tag-workshop-notice" role="status">
-              {{ matchNotice }}
-            </p>
-            <p v-if="!matchSearched && !matching" class="tag-workshop-hint">
-              搜索后可将候选的字段、封面和歌词填入下方编辑器，确认无误后再写入文件。
-            </p>
-            <ul v-if="matchCandidates.length > 0" class="tag-workshop-match-list">
-              <li v-for="candidate in matchCandidates" :key="candidateKey(candidate)">
-                <CoverImg
-                  class="tag-workshop-match-cover"
-                  :cover="candidate.track.cover"
-                  :cover-source="candidate.track.coverSource"
-                  :identity="candidate.track.id"
-                  :alt="`${candidate.track.title} 匹配封面`"
+            <div class="tag-workshop-match-fields" role="group" aria-label="要匹配的标签类型">
+              <span class="tag-workshop-match-fields-label">匹配内容</span>
+              <label v-for="field in TAG_MATCH_FIELD_DEFINITIONS" :key="field.key">
+                <input
+                  v-model="matchFieldIncluded[field.key]"
+                  type="checkbox"
+                  :disabled="batchMatching || busy"
                 />
-                <div class="tag-workshop-match-meta">
-                  <strong>{{ candidate.track.title }}</strong>
-                  <small>
-                    {{ candidate.track.artist }} · {{ candidate.track.album || '未知专辑' }}
-                    <template v-if="candidate.track.duration > 0">
-                      · {{ formatDuration(candidate.track.duration) }}
-                    </template>
-                  </small>
-                  <div class="tag-workshop-match-badges">
-                    <span>{{ candidate.sourceLabel }}</span>
-                    <span>{{ candidate.confidence === 'high' ? '高置信' : '中置信' }}</span>
-                    <span v-if="candidate.fills.cover">封面</span>
-                    <span v-if="candidate.fills.lyrics">歌词</span>
-                    <span v-if="candidate.fills.metadata">补全元数据</span>
+                {{ field.label }}
+              </label>
+            </div>
+            <p v-if="batchMatching && !batchWriting" class="tag-workshop-hint" role="status">
+              正在匹配 {{ batchMatchProgress.current }} / {{ batchMatchProgress.total }}
+              <template v-if="batchMatchProgress.label">
+                · {{ batchMatchProgress.label }}
+              </template>
+            </p>
+            <p v-else-if="batchWriting" class="tag-workshop-hint" role="status">
+              正在写入自动匹配结果{{ progress ? ` ${progress.current} / ${progress.total}` : '' }}…
+            </p>
+            <p v-if="batchMatchError" class="tag-workshop-alert" role="alert">
+              {{ batchMatchError }}
+            </p>
+            <p v-else-if="batchMatchNotice" class="tag-workshop-notice" role="status">
+              {{ batchMatchNotice }}
+            </p>
+            <p v-if="!batchMatching && !batchMatchDone" class="tag-workshop-hint">
+              高置信度结果会直接写入所选标签；低置信度结果会列在下方供你挑选。
+            </p>
+
+            <section
+              v-if="reviewEntries.length > 0"
+              class="tag-workshop-match-review"
+              aria-label="需要确认的匹配结果"
+            >
+              <header class="tag-workshop-match-review-head">
+                <strong>需要确认 {{ reviewEntries.length }} 首</strong>
+                <small>选择一条结果后会立即写入所选标签类型</small>
+              </header>
+              <article
+                v-for="entry in reviewEntries"
+                :key="entry.trackId"
+                class="tag-workshop-match-review-item"
+              >
+                <header>
+                  <div>
+                    <strong>{{ entry.title || entry.fileName }}</strong>
+                    <small>{{ entry.artist || '未知艺术家' }} · {{ entry.fileName }}</small>
                   </div>
-                </div>
-                <div class="tag-workshop-match-actions">
-                  <button type="button" :disabled="busy" @click="applyCandidateMetadata(candidate)">
-                    填入字段
-                  </button>
-                  <button
-                    type="button"
-                    :disabled="busy || !candidate.track.cover || Boolean(applyingCoverKey)"
-                    @click="applyCandidateCover(candidate)"
-                  >
-                    {{
-                      applyingCoverKey === candidateKey(candidate) ? '获取中…' : '使用封面'
-                    }}
-                  </button>
-                  <button
-                    type="button"
-                    :disabled="busy || Boolean(applyingLyricsKey)"
-                    @click="applyCandidateLyrics(candidate)"
-                  >
-                    {{
-                      applyingLyricsKey === candidateKey(candidate) ? '获取中…' : '使用歌词'
-                    }}
-                  </button>
-                  <button
-                    type="button"
-                    class="tag-workshop-match-all"
-                    :disabled="busy || Boolean(applyingCoverKey) || Boolean(applyingLyricsKey)"
-                    @click="applyCandidateAll(candidate)"
-                  >
-                    全部填入
-                  </button>
-                </div>
-              </li>
-            </ul>
+                  <span v-if="entry.message" class="tag-workshop-match-review-message">
+                    {{ entry.message }}
+                  </span>
+                </header>
+                <ul v-if="entry.candidates.length > 0" class="tag-workshop-match-list">
+                  <li v-for="candidate in entry.candidates" :key="candidateKey(candidate)">
+                    <CoverImg
+                      class="tag-workshop-match-cover"
+                      :cover="candidate.track.cover"
+                      :cover-source="candidate.track.coverSource"
+                      :identity="candidate.track.id"
+                      :alt="`${candidate.track.title} 匹配封面`"
+                    />
+                    <div class="tag-workshop-match-meta">
+                      <strong>{{ candidate.track.title }}</strong>
+                      <small>
+                        {{ candidate.track.artist }} · {{ candidate.track.album || '未知专辑' }}
+                        <template v-if="candidate.track.duration > 0">
+                          · {{ formatDuration(candidate.track.duration) }}
+                        </template>
+                      </small>
+                      <div class="tag-workshop-match-badges">
+                        <span>{{ candidate.sourceLabel }}</span>
+                        <span>
+                          {{ candidate.confidence === 'high' ? '高置信' : '中置信' }}
+                          {{ candidate.score }}
+                        </span>
+                        <span v-if="candidate.track.cover">封面</span>
+                        <span v-if="candidate.track.lyrics">歌词</span>
+                      </div>
+                    </div>
+                    <div class="tag-workshop-match-actions">
+                      <button
+                        type="button"
+                        class="tag-workshop-match-all"
+                        :disabled="busy || Boolean(applyingReviewKey)"
+                        @click="applyReviewedMatch(entry, candidate)"
+                      >
+                        {{
+                          applyingReviewKey === candidateKey(candidate) ? '应用中…' : '应用这条'
+                        }}
+                      </button>
+                    </div>
+                  </li>
+                </ul>
+                <p v-else class="tag-workshop-hint">
+                  没有搜索到可信结果，可调整标题或艺术家后重新匹配。
+                </p>
+              </article>
+            </section>
+
+            <details v-if="appliedEntries.length > 0" class="tag-workshop-match-details">
+              <summary>已写入 {{ appliedEntries.length }} 首</summary>
+              <ul>
+                <li v-for="entry in appliedEntries" :key="entry.trackId">
+                  <span>{{ entry.title || entry.fileName }}</span>
+                  <small>{{ entry.candidateLabel }}</small>
+                </li>
+              </ul>
+            </details>
+            <details v-if="unmatchedEntries.length > 0" class="tag-workshop-match-details">
+              <summary>{{ unmatchedEntries.length }} 首未找到匹配</summary>
+              <ul>
+                <li v-for="entry in unmatchedEntries" :key="entry.trackId">
+                  <span>{{ entry.title || entry.fileName }}</span>
+                  <small>{{ entry.fileName }}</small>
+                </li>
+              </ul>
+            </details>
+            <details v-if="failedMatchEntries.length > 0" class="tag-workshop-match-details">
+              <summary>{{ failedMatchEntries.length }} 首匹配或写入失败</summary>
+              <ul>
+                <li v-for="entry in failedMatchEntries" :key="entry.trackId">
+                  <span>{{ entry.title || entry.fileName }}</span>
+                  <small>{{ entry.message }}</small>
+                </li>
+              </ul>
+            </details>
           </section>
 
           <section v-if="singleTrack" class="tag-workshop-filename-tool" aria-label="从文件名识别标签">

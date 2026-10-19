@@ -274,19 +274,94 @@
   color: var(--te-settings-text-muted);
   font-size: 11px;
 }
-.tag-workshop-match-search {
+.tag-workshop-match-fields {
   display: flex;
-  flex: 1 1 320px;
-  gap: 6px;
-  max-width: 560px;
+  flex-wrap: wrap;
+  gap: 5px 12px;
+  align-items: center;
+  margin-top: 10px;
+  padding: 7px 10px;
+  border: 1px dashed var(--te-card-border);
+  border-radius: 8px;
 }
-.tag-workshop-match-search input {
-  flex: 1 1 auto;
-  min-width: 0;
+.tag-workshop-match-fields-label {
+  color: var(--te-settings-text-muted);
+  font-size: 11px;
 }
-.tag-workshop-match-search button {
-  flex: 0 0 auto;
-  white-space: nowrap;
+.tag-workshop-match-fields label {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  color: var(--te-settings-text-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.tag-workshop-match-fields input {
+  margin: 0;
+  accent-color: var(--te-primary-500);
+}
+.tag-workshop-match-review {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+.tag-workshop-match-review-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+}
+.tag-workshop-match-review-head small {
+  color: var(--te-settings-text-muted);
+  font-size: 11px;
+}
+.tag-workshop-match-review-item {
+  padding: 8px 10px;
+  border: 1px solid var(--te-card-border);
+  border-radius: 10px;
+  background: var(--te-card-bg);
+}
+.tag-workshop-match-review-item > header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+  justify-content: space-between;
+}
+.tag-workshop-match-review-item > header strong {
+  font-size: 13px;
+}
+.tag-workshop-match-review-item > header small {
+  display: block;
+  color: var(--te-settings-text-muted);
+  font-size: 11px;
+}
+.tag-workshop-match-review-message {
+  color: var(--te-danger-soft-fg);
+  font-size: 11px;
+}
+.tag-workshop-match-details {
+  margin-top: 10px;
+  color: var(--te-settings-text-muted);
+  font-size: 12px;
+}
+.tag-workshop-match-details summary {
+  cursor: pointer;
+}
+.tag-workshop-match-details ul {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.tag-workshop-match-details li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding: 3px 0;
+}
+.tag-workshop-match-details li span {
+  color: var(--te-settings-text);
 }
 .tag-workshop-match-list {
   display: flex;
