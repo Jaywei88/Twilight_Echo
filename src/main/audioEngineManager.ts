@@ -160,6 +160,8 @@ export class AudioEngineManager extends EventEmitter {
   private loudnessAnalysisManager: LoudnessAnalysisManager | null = null
   private loudnormStatus: LoudnormStatus = 'idle'
   private loudnormStatusSource: string | null = null
+  /** Upcoming source whose measurement was already requested ahead of time. */
+  private loudnormPrewarmSource = ''
   private metadataCache = new Map<
     string,
     {
@@ -305,6 +307,7 @@ export class AudioEngineManager extends EventEmitter {
           this.refreshOutputInfoFromNative(resetDefaults),
         pollAudioDeviceOptionsForChanges: () => this.pollAudioDeviceOptionsForChanges(),
         prepareLoudnormForPlay: (source) => this.prepareLoudnormForPlay(source),
+        prewarmLoudnormForUpcoming: (upcoming) => this.prewarmLoudnormForUpcoming(upcoming),
         tryNative: (context, command, logFailure) => this.tryNative(context, command, logFailure),
         isNativeVolumeSynced: () => this.nativeVolumeSynced,
         markNativeVolumeSynced: (value) => {
@@ -833,6 +836,43 @@ export class AudioEngineManager extends EventEmitter {
     } catch {
       return null
     }
+  }
+
+  /**
+   * Measure the queued next track while the current one still plays. By the time
+   * the engine advances, prepareLoudnormForPlay() is a cache hit and the incoming
+   * track starts at its measured gain instead of the fallback (0 dB) for the
+   * first second or two. Fire-and-forget and low priority: the playing track's
+   * own measurement always wins.
+   */
+  private prewarmLoudnormForUpcoming(upcoming: AudioEngineQueueItem | null | undefined): void {
+    if (this.processing.volumeNormalization !== 'loudnorm') return
+    const manager = this.loudnessAnalysisManager
+    if (!manager) return
+    const source = upcoming?.source?.trim() ?? ''
+    if (!source || source === this.playbackInfo.source?.trim()) return
+    if (source === this.loudnormPrewarmSource) return
+    if (this.loudnormPrewarmSource) {
+      // Superseded warm-ups are cancelled, but never one that already became the
+      // playing track (its measurement is now the loudnorm status source).
+      const previous = this.loudnormPrewarmSource
+      const stillPlaying =
+        previous === this.loudnormStatusSource || previous === this.playbackInfo.source?.trim()
+      if (!stillPlaying) manager.cancel(previous)
+    }
+    this.loudnormPrewarmSource = source
+
+    const trackId = this.queue.find((item) => item.source === source)?.id ?? upcoming?.id ?? source
+    const options = { allowRemote: /^https?:\/\//i.test(source) }
+    void manager
+      .peekCached({ trackId, filePath: source }, options)
+      .then((cached) => {
+        if (cached || this.destroyed) return
+        return manager.requestAnalysis({ trackId, filePath: source, priority: 10 }, options)
+      })
+      .catch(() => {
+        // A failed warm-up only costs the fallback window; playback is unaffected.
+      })
   }
 
   private async prepareLoudnormForPlay(source: string): Promise<void> {

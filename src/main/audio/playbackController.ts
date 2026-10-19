@@ -94,6 +94,8 @@ export interface PlaybackControllerHost {
   refreshOutputInfoFromNative(resetDefaults: boolean): void
   pollAudioDeviceOptionsForChanges(): void
   prepareLoudnormForPlay(source: string): Promise<void>
+  /** Measure the queued next track while the current one still plays. */
+  prewarmLoudnormForUpcoming(upcoming: AudioEngineQueueItem | null | undefined): void
   tryNative(
     context: string,
     command: (native: NativeAudioBinding) => void,
@@ -1632,6 +1634,12 @@ export class PlaybackController {
       const nativeInfo = this.readNativePlaybackInfo()
       if (nativeInfo) {
         this.playbackInfo = this.mergeNativePlaybackInfo(nativeInfo)
+        // Warm the incoming track's loudnorm measurement now: the analysis
+        // window is what made the next track start at fallback (0 dB) for a
+        // second or two before the measured gain landed.
+        this.host.prewarmLoudnormForUpcoming(
+          this.playbackInfo.upcomingTrack ?? nativeInfo.upcomingTrack
+        )
         const nativeIdentityPending = this.pendingNativeSource !== null
         const nextCapabilitySignature = this.createDeviceCapabilityRefreshSignature(
           this.playbackInfo

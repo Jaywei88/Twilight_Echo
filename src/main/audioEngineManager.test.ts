@@ -1697,6 +1697,110 @@ test('loudnorm injection during play() targets the incoming entry, not the outgo
   manager.destroy()
 })
 
+test('the tick pre-measures the upcoming track so the next one starts normalised', async () => {
+  const nativeBinding = new FakeNativeBinding()
+  const manager = makeManager(
+    {
+      exclusiveMode: true,
+      audioOutput: 'wasapi',
+      audioDevice: 'auto',
+      audioProcessing: { dspEnabled: true, volumeNormalization: 'loudnorm' }
+    },
+    nativeBinding
+  )
+  const outgoing = 'D:/Music/out.flac'
+  const incoming = 'D:/Music/in.flac'
+  await manager.loadQueue(
+    [
+      { id: 'out', source: outgoing, duration: 186 },
+      { id: 'in', source: incoming, duration: 257 }
+    ],
+    0
+  )
+  const requested: Array<{ filePath: string; priority?: number }> = []
+  manager.setLoudnessAnalysisManager({
+    peekCached: async () => null,
+    cancel: () => {},
+    requestAnalysis: async (request: { filePath: string; priority?: number }) => {
+      requested.push(request)
+      return { status: 'skipped' as const }
+    }
+  } as never)
+  await manager.play(outgoing, 0)
+  requested.length = 0
+
+  nativeBinding.playbackInfo = {
+    ...nativeBinding.playbackInfo,
+    upcomingTrack: { id: 'in', source: incoming, title: 'In' }
+  }
+  ;(manager as unknown as { tick: () => void }).tick()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+
+  assert.deepEqual(
+    requested.map((request) => request.filePath),
+    [incoming]
+  )
+  // Low priority: the playing track's own measurement must always win.
+  assert.equal(requested[0]?.priority, 10)
+
+  // A second tick must not re-request the same upcoming source.
+  ;(manager as unknown as { tick: () => void }).tick()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.equal(requested.length, 1)
+  manager.destroy()
+})
+
+test('a cached upcoming measurement skips the warm-up request', async () => {
+  const nativeBinding = new FakeNativeBinding()
+  const manager = makeManager(
+    {
+      exclusiveMode: true,
+      audioOutput: 'wasapi',
+      audioDevice: 'auto',
+      audioProcessing: { dspEnabled: true, volumeNormalization: 'loudnorm' }
+    },
+    nativeBinding
+  )
+  const outgoing = 'D:/Music/out.flac'
+  const incoming = 'D:/Music/in.flac'
+  await manager.loadQueue(
+    [
+      { id: 'out', source: outgoing, duration: 186 },
+      { id: 'in', source: incoming, duration: 257 }
+    ],
+    0
+  )
+  let analysisRequests = 0
+  manager.setLoudnessAnalysisManager({
+    peekCached: async ({ filePath }: { filePath: string }) =>
+      filePath === incoming
+        ? {
+            integratedLufs: -11,
+            truePeakDb: -1,
+            source: 'cached',
+            analyzedAt: '2026-01-01T00:00:00.000Z',
+            algorithmVersion: 1
+          }
+        : null,
+    cancel: () => {},
+    requestAnalysis: async () => {
+      analysisRequests += 1
+      return { status: 'skipped' as const }
+    }
+  } as never)
+  await manager.play(outgoing, 0)
+  analysisRequests = 0
+
+  nativeBinding.playbackInfo = {
+    ...nativeBinding.playbackInfo,
+    upcomingTrack: { id: 'in', source: incoming, title: 'In' }
+  }
+  ;(manager as unknown as { tick: () => void }).tick()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.equal(analysisRequests, 0)
+  manager.destroy()
+})
+
 test('normalizing explicit DSD Auto is not overridden by legacy dsdToPcm flag', () => {
   const normalized = normalizeAudioProcessingSettings({
     ...DEFAULT_AUDIO_PROCESSING,
