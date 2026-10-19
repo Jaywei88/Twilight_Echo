@@ -950,20 +950,32 @@ export class AudioEngineManager extends EventEmitter {
 
   private applyLoudnormMeasurementToQueue(source: string, analysis: LoudnessAnalysisResult): void {
     if (!Number.isFinite(analysis.integratedLufs)) return
-    let changed = false
-    this.queue = this.queue.map((item) => {
+    let targetIndex = -1
+    this.queue = this.queue.map((item, index) => {
       if (item.source !== source) return item
-      changed = true
+      if (targetIndex < 0) targetIndex = index
       return {
         ...item,
         measuredIntegratedLufs: analysis.integratedLufs,
         measuredTruePeakDb: analysis.truePeakDb
       }
     })
-    if (!changed) return
+    if (targetIndex < 0) return
+    // LoadQueue resets the engine's queue position to startIndex. Passing
+    // playbackInfo.queueIndex here rewound the native queue to the outgoing
+    // track whenever a measurement landed before playbackInfo had moved on
+    // (play() prepares loudnorm before it commits the new index), so the engine
+    // kept reporting the previous track and the incoming one played unnormalised.
+    // Anchor the injection on the measured source instead.
+    const playingSource = this.playbackInfo.source?.trim() ?? ''
+    if (playingSource && playingSource !== source) {
+      const playingIndex = this.queue.findIndex((item) => item.source === playingSource)
+      // Never rewind a queue that already advanced past the measured entry.
+      if (playingIndex >= 0 && playingIndex > targetIndex) return
+    }
     this.queueJson = JSON.stringify(this.queue)
     this.tryNative('注入 loudnorm 测量结果', (native) =>
-      native.LoadQueue?.(this.queueJson, this.playbackInfo.queueIndex)
+      native.LoadQueue?.(this.queueJson, targetIndex)
     )
   }
 

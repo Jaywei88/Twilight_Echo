@@ -1669,6 +1669,17 @@ export class PlaybackController {
           ) {
             this.emit('sleep-timer-boundary', { boundary: 'queueEnd' })
           }
+          // The engine advances its own queue at EOF, so play() never runs for
+          // this boundary. Without re-preparing loudnorm here the incoming track
+          // kept the outgoing track's measurement (or none at all) and played at
+          // full scale until the user pressed next/previous. CUE boundaries
+          // reuse one file, so only a real source change needs a new measurement.
+          if (this.host.getProcessing().volumeNormalization === 'loudnorm') {
+            const incomingSource = this.playbackInfo.source?.trim() ?? ''
+            if (incomingSource && incomingSource !== previousSource.trim()) {
+              void this.prepareLoudnormForPlay(incomingSource)
+            }
+          }
           this.emit('start-file')
         }
         if (

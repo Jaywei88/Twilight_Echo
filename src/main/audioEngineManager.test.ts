@@ -1555,6 +1555,148 @@ test('leaving loudnorm while cache lookup is pending cannot apply measurements o
   manager.destroy()
 })
 
+function stubLoudnessAnalysis(measurement: { integratedLufs: number; truePeakDb: number }) {
+  const lookedUp: string[] = []
+  return {
+    lookedUp,
+    manager: {
+      peekCached: async ({ filePath }: { filePath: string }) => {
+        lookedUp.push(filePath)
+        return {
+          integratedLufs: measurement.integratedLufs,
+          truePeakDb: measurement.truePeakDb,
+          source: 'cached',
+          analyzedAt: '2026-01-01T00:00:00.000Z',
+          algorithmVersion: 1
+        }
+      },
+      cancel: () => {},
+      requestAnalysis: () => Promise.resolve({ status: 'skipped' as const })
+    } as never
+  }
+}
+
+test('a native auto-advance re-prepares loudnorm for the incoming track', async () => {
+  const nativeBinding = new FakeNativeBinding()
+  const manager = makeManager(
+    {
+      exclusiveMode: true,
+      audioOutput: 'wasapi',
+      audioDevice: 'auto',
+      audioProcessing: { dspEnabled: true, volumeNormalization: 'loudnorm' }
+    },
+    nativeBinding
+  )
+  const outgoing = 'D:/Music/out.flac'
+  const incoming = 'D:/Music/in.flac'
+  await manager.loadQueue(
+    [
+      { id: 'out', source: outgoing, duration: 186 },
+      { id: 'in', source: incoming, duration: 257 }
+    ],
+    0
+  )
+  const loudness = stubLoudnessAnalysis({ integratedLufs: -14, truePeakDb: -1 })
+  manager.setLoudnessAnalysisManager(loudness.manager)
+  await manager.play(outgoing, 170)
+  loudness.lookedUp.length = 0
+
+  // The engine advances its own queue at EOF; play() never runs for that boundary.
+  nativeBinding.playbackInfo = {
+    ...nativeBinding.playbackInfo,
+    source: incoming,
+    queueIndex: 1,
+    duration: 257,
+    position: 0.25
+  }
+  ;(manager as unknown as { tick: () => void }).tick()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+
+  assert.deepEqual(loudness.lookedUp, [incoming])
+  assert.equal(manager.getLoudnormStatus().status, 'cached')
+  assert.equal(manager.getLoudnormStatus().source, incoming)
+  assert.equal(nativeBinding.lastLoadedQueueIndex, 1)
+  assert.equal(nativeBinding.lastLoadedQueue[1]?.measuredIntegratedLufs, -14)
+  manager.destroy()
+})
+
+test('a loudnorm measurement never rewinds the queue past the playing track', async () => {
+  const nativeBinding = new FakeNativeBinding()
+  const manager = makeManager(
+    {
+      exclusiveMode: true,
+      audioOutput: 'wasapi',
+      audioDevice: 'auto',
+      audioProcessing: { dspEnabled: true, volumeNormalization: 'loudnorm' }
+    },
+    nativeBinding
+  )
+  const outgoing = 'D:/Music/out.flac'
+  const incoming = 'D:/Music/in.flac'
+  await manager.loadQueue(
+    [
+      { id: 'out', source: outgoing, duration: 186 },
+      { id: 'in', source: incoming, duration: 257 }
+    ],
+    0
+  )
+  await manager.play(outgoing, 170)
+  nativeBinding.playbackInfo = {
+    ...nativeBinding.playbackInfo,
+    source: incoming,
+    queueIndex: 1,
+    duration: 257,
+    position: 0.25
+  }
+  ;(manager as unknown as { tick: () => void }).tick()
+  const loadQueueCalls = nativeBinding.loadQueueCalls
+
+  // A late measurement for the outgoing track must not reload the queue at its
+  // old index, which would snap the engine (and the playbar) back to it.
+  ;(
+    manager as unknown as {
+      applyLoudnormMeasurementToQueue: (
+        source: string,
+        analysis: { integratedLufs: number; truePeakDb: number }
+      ) => void
+    }
+  ).applyLoudnormMeasurementToQueue(outgoing, { integratedLufs: -18, truePeakDb: -2 })
+
+  assert.equal(nativeBinding.loadQueueCalls, loadQueueCalls)
+  manager.destroy()
+})
+
+test('loudnorm injection during play() targets the incoming entry, not the outgoing index', async () => {
+  const nativeBinding = new FakeNativeBinding()
+  const manager = makeManager(
+    {
+      exclusiveMode: true,
+      audioOutput: 'wasapi',
+      audioDevice: 'auto',
+      audioProcessing: { dspEnabled: true, volumeNormalization: 'loudnorm' }
+    },
+    nativeBinding
+  )
+  const outgoing = 'D:/Music/out.flac'
+  const incoming = 'D:/Music/in.flac'
+  await manager.loadQueue(
+    [
+      { id: 'out', source: outgoing, duration: 186 },
+      { id: 'in', source: incoming, duration: 257 }
+    ],
+    0
+  )
+  await manager.play(outgoing, 170)
+  manager.setLoudnessAnalysisManager(stubLoudnessAnalysis({ integratedLufs: -14, truePeakDb: -1 }).manager)
+  // play() prepares loudnorm before it commits the new queue index, so the
+  // injection has to resolve its own target by source.
+  await (
+    manager as unknown as { prepareLoudnormForPlay: (source: string) => Promise<void> }
+  ).prepareLoudnormForPlay(incoming)
+  assert.equal(nativeBinding.lastLoadedQueueIndex, 1)
+  manager.destroy()
+})
+
 test('normalizing explicit DSD Auto is not overridden by legacy dsdToPcm flag', () => {
   const normalized = normalizeAudioProcessingSettings({
     ...DEFAULT_AUDIO_PROCESSING,
