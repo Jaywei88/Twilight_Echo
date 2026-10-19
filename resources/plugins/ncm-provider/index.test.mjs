@@ -439,7 +439,7 @@ test('token bucket survives a system clock rollback without wedging requests', a
   }
 })
 
-test('search fails fast on a NetEase 405 and skips upstream during the cooldown', async () => {
+test('search returns empty on a NetEase 405 and skips upstream during the cooldown', async () => {
   let calls = 0
   let limited = true
   const provider = await activateProvider(async () => {
@@ -453,16 +453,10 @@ test('search fails fast on a NetEase 405 and skips upstream during the cooldown'
   try {
     mock.timers.enable({ apis: ['Date', 'setTimeout'] })
     mock.timers.setTime(1_000_000)
-    await assert.rejects(
-      provider.searchSongs('moon river'),
-      (error) => error.code === 'NCM_RATE_LIMITED'
-    )
-    assert.equal(calls, 1, 'the 405 is surfaced without a retry wait')
+    assert.deepEqual(await provider.searchSongs('moon river'), { items: [], total: 0 })
+    assert.equal(calls, 1, 'the 405 resolves without a retry wait')
 
-    await assert.rejects(
-      provider.searchSongs('another query'),
-      (error) => error.code === 'NCM_RATE_LIMITED'
-    )
+    assert.deepEqual(await provider.searchSongs('another query'), { items: [], total: 0 })
     assert.equal(calls, 1, 'no upstream request is made while the cooldown is active')
 
     limited = false
@@ -477,7 +471,7 @@ test('search fails fast on a NetEase 405 and skips upstream during the cooldown'
   }
 })
 
-test('concurrent searches fail fast on a shared 405 instead of queueing through cooldown', async () => {
+test('concurrent searches settle empty on a shared 405 instead of queueing through cooldown', async () => {
   let calls = 0
   const provider = await activateProvider(async () => {
     calls += 1
@@ -488,16 +482,16 @@ test('concurrent searches fail fast on a shared 405 instead of queueing through 
     mock.timers.enable({ apis: ['Date', 'setTimeout'] })
     mock.timers.setTime(1_000_000)
     let settled = 0
-    const failures = []
+    const results = []
     const pending = Promise.allSettled(
       Array.from({ length: 12 }, (_, index) =>
         provider.searchSongs(`q${index}`).then(
+          (value) => {
+            settled += 1
+            results.push(value)
+          },
           () => {
             settled += 1
-          },
-          (error) => {
-            settled += 1
-            failures.push(error)
           }
         )
       )
@@ -508,12 +502,12 @@ test('concurrent searches fail fast on a shared 405 instead of queueing through 
     }
     await pending
     assert.equal(settled, 12)
-    assert.equal(failures.length, 12)
+    assert.equal(results.length, 12)
     assert.equal(
-      failures.every((error) => error.code === 'NCM_RATE_LIMITED'),
+      results.every((value) => value.items.length === 0),
       true
     )
-    assert.ok(calls <= 5, 'queued searches reject before reaching upstream')
+    assert.ok(calls <= 5, 'queued searches stop before reaching upstream')
   } finally {
     mock.timers.reset()
     ncmProvider.deactivate()

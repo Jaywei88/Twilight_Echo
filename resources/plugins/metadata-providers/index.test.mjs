@@ -128,6 +128,20 @@ test('QQ lyrics decode HTML entities and are cached per song', async () => {
   }
 })
 
+test('QQ lyrics failures resolve empty instead of tripping the provider', async () => {
+  const dispose = withFetch(async () => jsonResponse('lyric backend down', 502))
+  try {
+    const providers = await activateProviders()
+    assert.deepEqual(await providers.get('qq').getLyrics({ id: 'qq:missing' }), {
+      lyrics: null,
+      translatedLyrics: null,
+      wordLyrics: null
+    })
+  } finally {
+    dispose()
+  }
+})
+
 test('loose JSON parser accepts single-quoted Kuwo payloads', () => {
   const loose = "{'ARTIST':'A & B','SONGNAME':'It\\'s me','DURATION':'215'}"
   assert.deepEqual(metadataProviders.parseLooseJson(loose), {
@@ -272,7 +286,7 @@ test('iTunes chooses a CJK-friendly storefront and normalizes songs', async () =
   }
 })
 
-test('iTunes rate limits trigger a shared cooldown without hammering upstream', async () => {
+test('iTunes rate limits cool down the source and return empty results', async () => {
   let calls = 0
   const dispose = withFetch(async () => {
     calls += 1
@@ -280,15 +294,47 @@ test('iTunes rate limits trigger a shared cooldown without hammering upstream', 
   })
   try {
     const providers = await activateProviders()
-    await assert.rejects(
-      providers.get('itunes').searchSongs('first query', 5, 0),
-      /触发限流/
+    assert.deepEqual(await providers.get('itunes').searchSongs('first query', 5, 0), {
+      items: [],
+      total: 0
+    })
+    assert.deepEqual(await providers.get('itunes').searchSongs('second query', 5, 0), {
+      items: [],
+      total: 0
+    })
+    assert.equal(calls, 1, 'the cooled-down source is skipped')
+  } finally {
+    dispose()
+  }
+})
+
+test('one failing source is isolated and does not block the other providers', async () => {
+  const calls = { qq: 0, kuwo: 0 }
+  const dispose = withFetch(async (url) => {
+    const parsed = new URL(url)
+    if (parsed.hostname === 'c.y.qq.com') {
+      calls.qq += 1
+      return jsonResponse('upstream broke', 500)
+    }
+    calls.kuwo += 1
+    return jsonResponse(
+      "{'TOTAL':'1','abslist':[{'MUSICRID':'MUSIC_228908','SONGNAME':'晴天','ARTIST':'周杰伦','ALBUM':'叶惠美','DURATION':'269'}]}"
     )
-    await assert.rejects(
-      providers.get('itunes').searchSongs('second query', 5, 0),
-      /冷却中/
-    )
-    assert.equal(calls, 1)
+  })
+  try {
+    const providers = await activateProviders()
+    assert.deepEqual(await providers.get('qq').searchSongs('晴天', 5, 0), {
+      items: [],
+      total: 0
+    })
+    assert.deepEqual(await providers.get('qq').searchSongs('晴天 周杰伦', 5, 0), {
+      items: [],
+      total: 0
+    })
+    assert.equal(calls.qq, 1, 'the failing source is skipped while cooling down')
+    const kuwo = await providers.get('kuwo').searchSongs('晴天', 5, 0)
+    assert.equal(kuwo.items.length, 1)
+    assert.equal(calls.kuwo, 1)
   } finally {
     dispose()
   }

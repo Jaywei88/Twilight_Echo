@@ -40,6 +40,11 @@ const lyricsCaches = {
   qq: new Map(),
   kuwo: new Map()
 }
+// 三个来源同属一个插件，共用同一条 RPC 熔断器；单个来源故障必须就地吞掉
+// 并只冷却自己，否则 iTunes 的网络故障会让 QQ/酷我一起被熔断。
+const SEARCH_SOURCE_COOLDOWN_MS = { qq: 30_000, kuwo: 30_000, itunes: 60_000 }
+const SEARCH_SOURCE_LABELS = { qq: 'QQ 音乐', kuwo: '酷我音乐', itunes: 'iTunes' }
+const searchSourceCooldowns = { qq: 0, kuwo: 0, itunes: 0 }
 let itunesTokenCount = ITUNES_TOKEN_CAPACITY
 let itunesRefillAt = Date.now()
 let itunesCooldownMs = 0
@@ -113,6 +118,7 @@ function resetState() {
   itunesRefillAt = Date.now()
   itunesCooldownMs = 0
   itunesCooldownUntil = 0
+  for (const source of Object.keys(searchSourceCooldowns)) searchSourceCooldowns[source] = 0
 }
 
 function getContext() {
@@ -251,16 +257,32 @@ async function searchWithCache(source, keywords, limit, offset, requestContext, 
   const cacheKey = `${query}\u0000${normalizedLimit}\u0000${normalizedOffset}`
   const cached = readTimedCache(searchCaches[source], cacheKey, SEARCH_CACHE_TTL_MS)
   if (cached) return cached
-  const value = await fetchResults(
-    query,
-    normalizedLimit,
-    normalizedOffset,
-    requestContext?.signal
-  )
+  if (Date.now() < searchSourceCooldowns[source]) return { items: [], total: 0 }
+  let value
+  try {
+    value = await fetchResults(query, normalizedLimit, normalizedOffset, requestContext?.signal)
+  } catch (error) {
+    if (requestContext?.signal?.aborted) throw error
+    noteSearchSourceFailure(source, error)
+    return { items: [], total: 0 }
+  }
   if (value.items.length > 0) {
     writeTimedCache(searchCaches[source], cacheKey, value, SEARCH_CACHE_CAPACITY)
   }
   return value
+}
+
+function noteSearchSourceFailure(source, error) {
+  const now = Date.now()
+  const cooldownMs = SEARCH_SOURCE_COOLDOWN_MS[source] ?? 30_000
+  const wasCoolingDown = now < searchSourceCooldowns[source]
+  searchSourceCooldowns[source] = now + cooldownMs
+  // iTunes 的 429/403 已由 noteItunesRateLimit 记录过日志，避免重复刷屏。
+  if (wasCoolingDown || (source === 'itunes' && error?.code === 'PROVIDER_RATE_LIMITED')) return
+  const detail = typeof error?.message === 'string' && error.message ? `：${error.message}` : ''
+  logWarn(
+    `${SEARCH_SOURCE_LABELS[source] ?? source} 搜索失败，暂停该来源 ${Math.ceil(cooldownMs / 1000)} 秒${detail}`
+  )
 }
 
 async function fetchText(
@@ -505,11 +527,18 @@ async function getQqLyrics(track, requestContext) {
     format: 'json',
     nobase64: '1'
   }).toString()
-  const data = await fetchJson(url, {
-    headers: QQ_HEADERS,
-    signal: requestContext?.signal,
-    label: 'QQ 音乐歌词'
-  })
+  let data
+  try {
+    data = await fetchJson(url, {
+      headers: QQ_HEADERS,
+      signal: requestContext?.signal,
+      label: 'QQ 音乐歌词'
+    })
+  } catch (error) {
+    if (requestContext?.signal?.aborted) throw error
+    // 歌词只是附加信息：单曲失败返回空，避免把整条多源插件熔断。
+    return emptyLyrics()
+  }
   const lyrics = decodeHtmlEntities(cleanString(data?.lyric))
   if (!lyrics) return emptyLyrics()
   const value = { lyrics, translatedLyrics: null, wordLyrics: null }

@@ -2384,15 +2384,23 @@ async function searchSongs(keywords, limit = 30, offset = 0, requestContext) {
   }
   // MusicTag 的网易云来源走网页版 weapi/cloudsearch/pc；模块默认的 eapi
   // （手机端搜索）在匿名高频时会更容易被 405 风控。
-  const data = await requestOptionalAuthRead(
-    `/cloudsearch?keywords=${encodeURIComponent(keywords)}&type=1&limit=${limit}&offset=${offset}&crypto=weapi`,
-    {
-      attempts: SEARCH_READ_ATTEMPTS,
-      label: `search ${keywords}`,
-      signal: requestContext?.signal,
-      failFastOnRateLimit: true
-    }
-  )
+  let data
+  try {
+    data = await requestOptionalAuthRead(
+      `/cloudsearch?keywords=${encodeURIComponent(keywords)}&type=1&limit=${limit}&offset=${offset}&crypto=weapi`,
+      {
+        attempts: SEARCH_READ_ATTEMPTS,
+        label: `search ${keywords}`,
+        signal: requestContext?.signal,
+        failFastOnRateLimit: true
+      }
+    )
+  } catch (error) {
+    // 风控是批量匹配的预期分支：返回空结果让上层立即切到其它回退源。
+    // 抛出会被 RPC 层记成失败并打开整条网易云熔断，反而拖垮后续歌曲。
+    if (isRateLimitError(error)) return { items: [], total: 0 }
+    throw error
+  }
   const result = data.result || data.data?.result || {}
   const songs = Array.isArray(result.songs) ? result.songs : []
   const total = typeof result.songCount === 'number' ? result.songCount : songs.length
