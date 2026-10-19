@@ -29,6 +29,7 @@ import {
 const MAX_TAG_MUTATION_ITEMS = 1_000
 const MAX_TAG_READ_ITEMS = 500
 const MAX_TAG_TEXT_LENGTH = 1_024
+const MAX_TAG_LYRICS_LENGTH = 256 * 1_024
 const MAX_OPERATION_ID_LENGTH = 128
 const MAX_COVER_BYTES = 8 * 1024 * 1024
 const MAX_COVER_DIMENSION = 4_096
@@ -412,7 +413,7 @@ function normalizeTagPatch(record: Record<string, unknown>): Omit<TagWriteInput,
   const genre = optionalNullableText(record.genre, 'genre')
   const composer = optionalNullableText(record.composer, 'composer')
   const comment = optionalNullableText(record.comment, 'comment')
-  const lyrics = optionalNullableText(record.lyrics, 'lyrics')
+  const lyrics = optionalNullableText(record.lyrics, 'lyrics', MAX_TAG_LYRICS_LENGTH)
   const cover = record.coverData === undefined ? undefined : normalizeCoverOrNull(record.coverData)
   return {
     ...(title !== undefined ? { title } : {}),
@@ -443,10 +444,14 @@ function normalizeFilePath(value: unknown): string {
   return value
 }
 
-function optionalNullableText(value: unknown, field: string): string | null | undefined {
+function optionalNullableText(
+  value: unknown,
+  field: string,
+  maxLength = MAX_TAG_TEXT_LENGTH
+): string | null | undefined {
   if (value === undefined) return undefined
   if (value === null) return null
-  if (typeof value !== 'string' || value.length > MAX_TAG_TEXT_LENGTH) {
+  if (typeof value !== 'string' || value.length > maxLength) {
     throw new Error(`Tag ${field} is invalid`)
   }
   return value

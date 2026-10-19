@@ -707,20 +707,24 @@ async function runBatchMatch(): Promise<void> {
           candidates: []
         }
         try {
-          const searchQuery = buildMetadataSearchQueries(track)[0] ?? ''
-          if (!searchQuery) throw new Error('缺少可搜索的标题')
-          const search = await mediaProviders.searchAllSongs({
-            query: searchQuery,
-            localTracks: [],
-            limit: 20,
-            offset: 0,
-            signal: controller.signal
-          })
-          if (controller.signal.aborted || run !== batchMatchRun) return
-          const candidates = buildMetadataMatchCandidates(
-            track,
-            search.items.map((item) => item.track)
-          ).slice(0, 8)
+          const searchQueries = buildMetadataSearchQueries(track)
+          if (searchQueries.length === 0) throw new Error('缺少可搜索的标题')
+          let candidates: MetadataMatchCandidate[] = []
+          for (const searchQuery of searchQueries) {
+            const search = await mediaProviders.searchAllSongs({
+              query: searchQuery,
+              localTracks: [],
+              limit: 20,
+              offset: 0,
+              signal: controller.signal
+            })
+            if (controller.signal.aborted || run !== batchMatchRun) return
+            candidates = buildMetadataMatchCandidates(
+              track,
+              search.items.map((item) => item.track)
+            ).slice(0, 8)
+            if (candidates.length > 0) break
+          }
           if (candidates.length === 0) {
             slots[index] = { ...base, status: 'noMatch' }
             continue
@@ -790,6 +794,11 @@ async function runBatchMatch(): Promise<void> {
   }
 }
 
+function writeErrorMessage(error: unknown, fallback: string): string {
+  const message = error instanceof Error ? error.message : fallback
+  return message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '')
+}
+
 async function writeBatchMatchEntries(
   entries: BatchMatchTrackResult[],
   reviewed = false
@@ -835,7 +844,7 @@ async function writeBatchMatchEntries(
       await loadSelectedSnapshot({ preserveMatchState: true })
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : '标签写入失败'
+    const message = writeErrorMessage(error, '标签写入失败')
     for (const entry of entries) {
       entry.status = reviewed ? 'review' : 'failed'
       entry.message = message
@@ -887,7 +896,8 @@ async function applyReviewedMatch(
     }
   } catch (error) {
     entry.status = 'review'
-    entry.message = error instanceof Error ? error.message : '无法应用这条匹配'
+    entry.message = writeErrorMessage(error, '无法应用这条匹配')
+    batchMatchNotice.value = batchSummaryText()
   } finally {
     if (applyingReviewKey.value === key) applyingReviewKey.value = ''
   }
@@ -939,7 +949,7 @@ async function writeSelected(): Promise<void> {
       await loadSelectedSnapshot()
     }
   } catch (error) {
-    formError.value = error instanceof Error ? error.message : '标签写入失败'
+    formError.value = writeErrorMessage(error, '标签写入失败')
   } finally {
     busy.value = false
     operationId.value = null
@@ -1359,7 +1369,7 @@ onBeforeUnmount(() => {
             <p v-if="batchMatchError" class="tag-workshop-alert" role="alert">
               {{ batchMatchError }}
             </p>
-            <p v-else-if="batchMatchNotice" class="tag-workshop-notice" role="status">
+            <p v-if="batchMatchNotice" class="tag-workshop-notice" role="status">
               {{ batchMatchNotice }}
             </p>
             <p v-if="!batchMatching && !batchMatchDone" class="tag-workshop-hint">

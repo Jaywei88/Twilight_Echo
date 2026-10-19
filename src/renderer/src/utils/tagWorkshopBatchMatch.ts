@@ -99,8 +99,10 @@ export function hasMatchedTagPatch(patch: LocalLibraryTagPatch): boolean {
   return Object.keys(patch).length > 0
 }
 
+export const AUTO_APPLY_MIN_SCORE = 80
+
 export function shouldAutoApplyMatch(candidate: MetadataMatchCandidate): boolean {
-  return candidate.confidence === 'high'
+  return candidate.score >= AUTO_APPLY_MIN_SCORE
 }
 
 function isPositiveInteger(value: number | undefined): value is number {

@@ -192,6 +192,28 @@ test('tag IPC writes, reads, and clears extended tags with cover progress', asyn
   }
 })
 
+test('tag IPC accepts lyrics longer than the generic text field limit', async () => {
+  const fixture = createFixture()
+  try {
+    const event = { sender: 'trusted-renderer' }
+    const handlers = createTagWriteIpcHandlers({
+      backupRoot: fixture.backupRoot,
+      assertTrustedSender: () => {},
+      authorizeAudioFile: async (filePath) => filePath,
+      redactError: errorMessage
+    })
+    const lyrics = `[00:00.00]${'月'.repeat(5_000)}\n[00:10.00]${'光'.repeat(5_000)}`
+    const writeResult = await handlers.write(event, {
+      items: [{ filePath: fixture.audioFile, title: 'Long Lyrics', lyrics }]
+    })
+    assert.deepEqual(writeResult.items, [{ filePath: fixture.audioFile, status: 'success' }])
+    const readResult = await handlers.read(event, { filePaths: [fixture.audioFile] })
+    assert.equal(readResult.items[0].tags?.lyrics, lyrics)
+  } finally {
+    fixture.dispose()
+  }
+})
+
 test('tag IPC cancels a queued write before it starts', async () => {
   const fixture = createFixture()
   try {

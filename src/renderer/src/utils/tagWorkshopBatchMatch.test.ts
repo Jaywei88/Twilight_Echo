@@ -88,9 +88,10 @@ test('batch match patch includes cover bytes and lyrics only when provided', () 
   )
 })
 
-test('only high-confidence matches apply without confirmation', () => {
+test('high-confidence and strong medium matches apply without confirmation', () => {
   assert.equal(shouldAutoApplyMatch(candidate()), true)
-  assert.equal(shouldAutoApplyMatch({ ...candidate(), confidence: 'medium', score: 84 }), false)
+  assert.equal(shouldAutoApplyMatch({ ...candidate(), confidence: 'medium', score: 81 }), true)
+  assert.equal(shouldAutoApplyMatch({ ...candidate(), confidence: 'medium', score: 79 }), false)
 })
 
 test('default batch match selection covers common metadata, cover and lyrics', () => {
