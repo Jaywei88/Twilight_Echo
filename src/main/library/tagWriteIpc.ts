@@ -1,22 +1,34 @@
+import { randomUUID } from 'node:crypto'
 import type {
+  LocalLibraryTagCancelRequest,
   LocalLibraryTagOperationResult,
+  LocalLibraryTagReadRequest,
+  LocalLibraryTagReadResult,
   LocalLibraryTagRestoreRequest,
   LocalLibraryTagRestoreResult,
+  LocalLibraryTagSnapshot,
   LocalLibraryTagWriteItem,
+  LocalLibraryTagWriteProgress,
   LocalLibraryTagWriteRequest,
   LocalLibraryTagWriteResult
 } from '../../shared/localLibraryTags.ts'
 import {
   getTagWriteJournalRecoveryEntries,
+  readTagsFromFile,
   restoreTagsFromBackup,
   TagWriteBatchError,
-  writeTagsBatchWithRollback,
+  writeTagsBatchWithRollbackAsync,
+  type TagReadOptions,
+  type TagWriteBatchOptions,
+  type TagWriteBatchOutcome,
   type TagWriteInput,
   type TagWriteJournalEntry
 } from './tagWriteService.ts'
 
 const MAX_TAG_MUTATION_ITEMS = 1_000
+const MAX_TAG_READ_ITEMS = 500
 const MAX_TAG_TEXT_LENGTH = 1_024
+const MAX_OPERATION_ID_LENGTH = 128
 const MAX_COVER_BYTES = 8 * 1024 * 1024
 const MAX_COVER_DIMENSION = 4_096
 const MAX_COVER_PIXELS = 16_777_216
@@ -24,6 +36,8 @@ const MAX_COVER_PIXELS = 16_777_216
 export interface TagWriteIpcHandlers {
   write(event: unknown, request: unknown): Promise<LocalLibraryTagWriteResult>
   restore(event: unknown, request: unknown): Promise<LocalLibraryTagRestoreResult>
+  read(event: unknown, request: unknown): Promise<LocalLibraryTagReadResult>
+  cancel(event: unknown, request: unknown): Promise<boolean>
 }
 
 export interface TagWriteIpcDependencies {
@@ -31,53 +45,110 @@ export interface TagWriteIpcDependencies {
   assertTrustedSender(event: unknown): void
   authorizeAudioFile(filePath: string): Promise<string>
   redactError(error: unknown): string
-  writeBatch?(inputs: readonly TagWriteInput[], backupRoot: string): TagWriteJournalEntry[]
+  writeBatchAsync?(
+    inputs: readonly TagWriteInput[],
+    backupRoot: string,
+    options: TagWriteBatchOptions
+  ): Promise<TagWriteBatchOutcome>
   restoreFromBackup?(filePath: string, backupRoot: string): void
   readRecoveryEntries?(backupRoot: string): Array<{ filePath: string }>
+  readTags?(filePath: string, options: TagReadOptions): LocalLibraryTagSnapshot
+  sendProgress?(event: unknown, progress: LocalLibraryTagWriteProgress): void
 }
 
 export function createTagWriteIpcHandlers(
   dependencies: TagWriteIpcDependencies
 ): TagWriteIpcHandlers {
-  const writeBatch = dependencies.writeBatch ?? writeTagsBatchWithRollback
+  const writeBatchAsync = dependencies.writeBatchAsync ?? writeTagsBatchWithRollbackAsync
   const restoreFromBackup = dependencies.restoreFromBackup ?? restoreTagsFromBackup
   const readRecoveryEntries = dependencies.readRecoveryEntries ?? getTagWriteJournalRecoveryEntries
+  const readTags = dependencies.readTags ?? readTagsFromFile
+  const activeOperations = new Map<string, { cancelled: boolean }>()
+  let writeChain: Promise<unknown> = Promise.resolve()
+
+  function enqueueWrite<T>(operation: () => Promise<T>): Promise<T> {
+    const result = writeChain.catch(() => {}).then(operation)
+    writeChain = result.then(
+      () => undefined,
+      () => undefined
+    )
+    return result
+  }
+
+  function withOperationId(
+    request: LocalLibraryTagWriteRequest,
+    operationId: string,
+    result: LocalLibraryTagWriteResult
+  ): LocalLibraryTagWriteResult {
+    return request.operationId === undefined ? result : { operationId, ...result }
+  }
 
   return {
     async write(event, rawRequest) {
       dependencies.assertTrustedSender(event)
       const request = normalizeWriteRequest(rawRequest)
-      const authorization = await authorizeItems(request.items, dependencies)
-      if (authorization.failures.size > 0) {
-        return {
-          items: request.items.map((item, index) =>
-            authorization.failures.has(index)
-              ? failed(item.filePath, authorization.failures.get(index)!)
-              : notAttempted(
-                  item.filePath,
-                  'Batch not started because another path was unauthorized'
-                )
-          )
-        }
-      }
+      const operationId = request.operationId ?? randomUUID()
+      const operation = { cancelled: false }
+      activeOperations.set(operationId, operation)
 
       try {
-        const journalEntries = writeBatch(authorization.items, dependencies.backupRoot)
-        return { items: journalEntries.map((entry) => success(entry.filePath)) }
-      } catch (error) {
-        if (error instanceof TagWriteBatchError) {
-          return {
-            items: error.journal.entries.map((entry) => toWriteOperationResult(entry, dependencies))
+        return await enqueueWrite(async () => {
+          if (operation.cancelled) {
+            return withOperationId(request, operationId, {
+              items: request.items.map((item) => notAttempted(item.filePath, '写入已取消')),
+              cancelled: true
+            })
           }
-        }
-        return {
-          items: authorization.items.map((item) =>
-            notAttempted(
-              item.filePath,
-              `Batch journal could not be initialized: ${dependencies.redactError(error)}`
+
+          const authorization = await authorizeItems(request.items, dependencies)
+          if (authorization.failures.size > 0) {
+            return withOperationId(request, operationId, {
+              items: request.items.map((item, index) =>
+                authorization.failures.has(index)
+                  ? failed(item.filePath, authorization.failures.get(index)!)
+                  : notAttempted(
+                      item.filePath,
+                      'Batch not started because another path was unauthorized'
+                    )
+              )
+            })
+          }
+
+          try {
+            const outcome = await writeBatchAsync(
+              authorization.items,
+              dependencies.backupRoot,
+              {
+                shouldCancel: () => operation.cancelled,
+                onProgress: (progress) => {
+                  dependencies.sendProgress?.(event, { operationId, ...progress })
+                }
+              }
             )
-          )
-        }
+            return withOperationId(request, operationId, {
+              items: outcome.entries.map((entry) => toWriteOperationResult(entry, dependencies)),
+              ...(outcome.cancelled ? { cancelled: true } : {})
+            })
+          } catch (error) {
+            if (error instanceof TagWriteBatchError) {
+              return withOperationId(request, operationId, {
+                items: error.journal.entries.map((entry) =>
+                  toWriteOperationResult(entry, dependencies)
+                )
+              })
+            }
+            return withOperationId(request, operationId, {
+              items: authorization.items.map((item) =>
+                notAttempted(
+                  item.filePath,
+                  `Batch journal could not be initialized: ${dependencies.redactError(error)}`
+                )
+              )
+            })
+          }
+        })
+      } finally {
+        activeOperations.delete(operationId)
       }
     },
 
@@ -117,6 +188,40 @@ export function createTagWriteIpcHandlers(
           }
         })
       }
+    },
+
+    async read(event, rawRequest) {
+      dependencies.assertTrustedSender(event)
+      const request = normalizeReadRequest(rawRequest)
+      const authorization = await authorizeFilePaths(request.filePaths, dependencies)
+      const items: LocalLibraryTagReadResult['items'] = []
+      for (let index = 0; index < request.filePaths.length; index++) {
+        const requestedPath = request.filePaths[index]
+        const failure = authorization.failures.get(index)
+        if (failure !== undefined) {
+          items.push({ filePath: requestedPath, message: failure })
+          continue
+        }
+        try {
+          items.push({
+            filePath: requestedPath,
+            tags: readTags(authorization.filePaths[index], { includeCover: request.includeCover })
+          })
+        } catch (error) {
+          items.push({ filePath: requestedPath, message: dependencies.redactError(error) })
+        }
+        await yieldToEventLoop()
+      }
+      return { items }
+    },
+
+    async cancel(event, rawRequest) {
+      dependencies.assertTrustedSender(event)
+      const request = normalizeCancelRequest(rawRequest)
+      const operation = activeOperations.get(request.operationId)
+      if (!operation) return false
+      operation.cancelled = true
+      return true
     }
   }
 }
@@ -156,11 +261,16 @@ function normalizeWriteRequest(value: unknown): LocalLibraryTagWriteRequest {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('Tag write request must be an object')
   }
-  const items = (value as Record<string, unknown>).items
+  const record = value as Record<string, unknown>
+  const items = record.items
   if (!Array.isArray(items) || items.length === 0 || items.length > MAX_TAG_MUTATION_ITEMS) {
     throw new Error(`Tag write request must include 1-${MAX_TAG_MUTATION_ITEMS} items`)
   }
-  return { items: items.map(normalizeWriteItem) }
+  const operationId = optionalOperationId(record.operationId)
+  return {
+    items: items.map(normalizeWriteItem),
+    ...(operationId !== undefined ? { operationId } : {})
+  }
 }
 
 function normalizeWriteItem(value: unknown): LocalLibraryTagWriteItem {
@@ -196,26 +306,83 @@ function normalizeRestoreRequest(value: unknown): LocalLibraryTagRestoreRequest 
   return { filePaths: record.filePaths.map(normalizeFilePath) }
 }
 
+function normalizeReadRequest(value: unknown): Required<LocalLibraryTagReadRequest> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Tag read request must be an object')
+  }
+  const record = value as Record<string, unknown>
+  if (
+    !Array.isArray(record.filePaths) ||
+    record.filePaths.length === 0 ||
+    record.filePaths.length > MAX_TAG_READ_ITEMS
+  ) {
+    throw new Error(`Tag read request must include 1-${MAX_TAG_READ_ITEMS} file paths`)
+  }
+  if (record.includeCover !== undefined && typeof record.includeCover !== 'boolean') {
+    throw new Error('Tag read includeCover must be a boolean')
+  }
+  return {
+    filePaths: record.filePaths.map(normalizeFilePath),
+    includeCover: record.includeCover === true
+  }
+}
+
+function normalizeCancelRequest(value: unknown): LocalLibraryTagCancelRequest {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Tag cancel request must be an object')
+  }
+  const operationId = optionalOperationId((value as Record<string, unknown>).operationId)
+  if (operationId === undefined) throw new Error('Tag cancel operation id is invalid')
+  return { operationId }
+}
+
+function optionalOperationId(value: unknown): string | undefined {
+  if (value === undefined) return undefined
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > MAX_OPERATION_ID_LENGTH ||
+    !/^[A-Za-z0-9_-]+$/.test(value)
+  ) {
+    throw new Error('Tag operation id is invalid')
+  }
+  return value
+}
+
 function normalizeTagPatch(record: Record<string, unknown>): Omit<TagWriteInput, 'filePath'> {
-  const title = optionalText(record.title, 'title')
-  const artist = optionalText(record.artist, 'artist')
-  const album = optionalText(record.album, 'album')
-  const albumArtist = optionalText(record.albumArtist, 'album artist')
-  const track = optionalPositiveInteger(record.track, 'track')
-  const disc = optionalPositiveInteger(record.disc, 'disc')
-  const year = optionalPositiveInteger(record.year, 'year')
-  const genre = optionalText(record.genre, 'genre')
-  const cover = record.coverData === undefined ? undefined : normalizeCoverData(record.coverData)
+  const title = optionalNullableText(record.title, 'title')
+  const artist = optionalNullableText(record.artist, 'artist')
+  const album = optionalNullableText(record.album, 'album')
+  const albumArtist = optionalNullableText(record.albumArtist, 'album artist')
+  const track = optionalNullablePositiveInteger(record.track, 'track')
+  const trackCount = optionalNullablePositiveInteger(record.trackCount, 'track count')
+  const disc = optionalNullablePositiveInteger(record.disc, 'disc')
+  const discCount = optionalNullablePositiveInteger(record.discCount, 'disc count')
+  const year = optionalNullablePositiveInteger(record.year, 'year')
+  const genre = optionalNullableText(record.genre, 'genre')
+  const composer = optionalNullableText(record.composer, 'composer')
+  const comment = optionalNullableText(record.comment, 'comment')
+  const lyrics = optionalNullableText(record.lyrics, 'lyrics')
+  const cover = record.coverData === undefined ? undefined : normalizeCoverOrNull(record.coverData)
   return {
     ...(title !== undefined ? { title } : {}),
     ...(artist !== undefined ? { artist } : {}),
     ...(album !== undefined ? { album } : {}),
     ...(albumArtist !== undefined ? { albumArtist } : {}),
     ...(track !== undefined ? { track } : {}),
+    ...(trackCount !== undefined ? { trackCount } : {}),
     ...(disc !== undefined ? { disc } : {}),
+    ...(discCount !== undefined ? { discCount } : {}),
     ...(year !== undefined ? { year } : {}),
     ...(genre !== undefined ? { genre } : {}),
-    ...(cover ? { coverData: cover.data, coverMimeType: cover.mimeType } : {})
+    ...(composer !== undefined ? { composer } : {}),
+    ...(comment !== undefined ? { comment } : {}),
+    ...(lyrics !== undefined ? { lyrics } : {}),
+    ...(cover === null
+      ? { coverData: null }
+      : cover
+        ? { coverData: cover.data, coverMimeType: cover.mimeType }
+        : {})
   }
 }
 
@@ -226,20 +393,32 @@ function normalizeFilePath(value: unknown): string {
   return value
 }
 
-function optionalText(value: unknown, field: string): string | undefined {
+function optionalNullableText(value: unknown, field: string): string | null | undefined {
   if (value === undefined) return undefined
+  if (value === null) return null
   if (typeof value !== 'string' || value.length > MAX_TAG_TEXT_LENGTH) {
     throw new Error(`Tag ${field} is invalid`)
   }
   return value
 }
 
-function optionalPositiveInteger(value: unknown, field: string): number | undefined {
+function optionalNullablePositiveInteger(
+  value: unknown,
+  field: string
+): number | null | undefined {
   if (value === undefined) return undefined
+  if (value === null) return null
   if (!Number.isSafeInteger(value) || (value as number) <= 0 || (value as number) > 9_999) {
     throw new Error(`Tag ${field} is invalid`)
   }
   return value as number
+}
+
+function normalizeCoverOrNull(
+  value: unknown
+): { data: Uint8Array; mimeType: 'image/jpeg' | 'image/png' } | null {
+  if (value === null) return null
+  return normalizeCoverData(value)
 }
 
 function normalizeCoverData(value: unknown): {
@@ -356,4 +535,8 @@ function failed(filePath: string, message: string): LocalLibraryTagOperationResu
 
 function notAttempted(filePath: string, message: string): LocalLibraryTagOperationResult {
   return { filePath, status: 'notAttempted', message }
+}
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise<void>((resolve) => setImmediate(resolve))
 }

@@ -14,8 +14,11 @@ import type {
   LocalLibraryScanProgress,
   LocalLibraryScanStatus,
   LocalLibraryScanUpdate,
+  LocalLibraryTagReadRequest,
+  LocalLibraryTagReadResult,
   LocalLibraryTagRestoreRequest,
   LocalLibraryTagRestoreResult,
+  LocalLibraryTagWriteProgress,
   LocalLibraryTagWriteRequest,
   LocalLibraryTagWriteResult,
   LibraryWatcherStatusSnapshot
@@ -42,6 +45,15 @@ export const libraryAndFileSystemApi = {
       ipcRenderer.invoke(IPC.library.writeTags, request),
     restoreTags: (request: LocalLibraryTagRestoreRequest): Promise<LocalLibraryTagRestoreResult> =>
       ipcRenderer.invoke(IPC.library.restoreTags, request),
+    readTags: (request: LocalLibraryTagReadRequest): Promise<LocalLibraryTagReadResult> =>
+      ipcRenderer.invoke(IPC.library.readTags, request),
+    cancelTagWrite: (operationId: string): Promise<boolean> =>
+      ipcRenderer.invoke(IPC.library.cancelTagWrite, { operationId }),
+    onTagWriteProgress: (cb: (progress: LocalLibraryTagWriteProgress) => void): (() => void) => {
+      const handler = (_event, progress: LocalLibraryTagWriteProgress): void => cb(progress)
+      ipcRenderer.on(IPC.library.tagWriteProgress, handler)
+      return () => ipcRenderer.removeListener(IPC.library.tagWriteProgress, handler)
+    },
     scanStartup: (): Promise<LocalLibraryScanUpdate> => ipcRenderer.invoke(IPC.library.scanStartup),
     scanFull: (): Promise<LocalLibraryScanUpdate> => ipcRenderer.invoke(IPC.library.scanFull),
     getScanStatus: (): Promise<LocalLibraryScanStatus> =>

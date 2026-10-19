@@ -1,13 +1,18 @@
 export interface LocalLibraryTagPatch {
-  title?: string
-  artist?: string
-  album?: string
-  albumArtist?: string
-  track?: number
-  disc?: number
-  year?: number
-  genre?: string
-  coverData?: Uint8Array
+  title?: string | null
+  artist?: string | null
+  album?: string | null
+  albumArtist?: string | null
+  track?: number | null
+  trackCount?: number | null
+  disc?: number | null
+  discCount?: number | null
+  year?: number | null
+  genre?: string | null
+  composer?: string | null
+  comment?: string | null
+  lyrics?: string | null
+  coverData?: Uint8Array | null
 }
 
 export interface LocalLibraryTagWriteItem extends LocalLibraryTagPatch {
@@ -16,6 +21,7 @@ export interface LocalLibraryTagWriteItem extends LocalLibraryTagPatch {
 
 export interface LocalLibraryTagWriteRequest {
   items: LocalLibraryTagWriteItem[]
+  operationId?: string
 }
 
 export interface LocalLibraryTagRestoreRequest {
@@ -38,8 +44,55 @@ export interface LocalLibraryTagOperationResult {
 
 export interface LocalLibraryTagWriteResult {
   items: LocalLibraryTagOperationResult[]
+  operationId?: string
+  cancelled?: boolean
 }
 
 export interface LocalLibraryTagRestoreResult {
   items: LocalLibraryTagOperationResult[]
+}
+
+export interface LocalLibraryTagReadRequest {
+  filePaths: string[]
+  includeCover?: boolean
+}
+
+export interface LocalLibraryTagSnapshot {
+  title: string | null
+  artist: string | null
+  album: string | null
+  albumArtist: string | null
+  track: number | null
+  trackCount: number | null
+  disc: number | null
+  discCount: number | null
+  year: number | null
+  genre: string | null
+  composer: string | null
+  comment: string | null
+  lyrics: string | null
+  hasCover: boolean
+  coverMimeType: string | null
+  coverData?: Uint8Array
+}
+
+export interface LocalLibraryTagReadItem {
+  filePath: string
+  tags?: LocalLibraryTagSnapshot
+  message?: string
+}
+
+export interface LocalLibraryTagReadResult {
+  items: LocalLibraryTagReadItem[]
+}
+
+export interface LocalLibraryTagWriteProgress {
+  operationId: string
+  current: number
+  total: number
+  filePath: string
+}
+
+export interface LocalLibraryTagCancelRequest {
+  operationId: string
 }

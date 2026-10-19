@@ -60,18 +60,64 @@ export function successfulTagPaths(results: readonly LocalLibraryTagOperationRes
 }
 
 export function tagPatchFromForm(
-  values: Record<keyof LocalLibraryTagPatch, unknown>
+  values: Partial<Record<keyof LocalLibraryTagPatch, unknown>>
 ): LocalLibraryTagPatch {
   const patch: LocalLibraryTagPatch = {}
-  for (const field of ['title', 'artist', 'album', 'albumArtist', 'genre'] as const) {
+  for (const field of [
+    'title',
+    'artist',
+    'album',
+    'albumArtist',
+    'genre',
+    'composer',
+    'comment',
+    'lyrics'
+  ] as const) {
     const value = values[field]
     if (typeof value === 'string' && value.trim()) patch[field] = value.trim()
   }
-  for (const field of ['track', 'disc', 'year'] as const) {
+  for (const field of ['track', 'trackCount', 'disc', 'discCount', 'year'] as const) {
     const value = values[field]
     if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0) patch[field] = value
   }
   if (values.coverData instanceof Uint8Array) patch.coverData = values.coverData
+  return patch
+}
+
+export function tagPatchFromWorkshopForm(
+  values: Partial<Record<keyof LocalLibraryTagPatch, unknown>>
+): LocalLibraryTagPatch {
+  const patch: LocalLibraryTagPatch = {}
+  for (const field of [
+    'title',
+    'artist',
+    'album',
+    'albumArtist',
+    'genre',
+    'composer',
+    'comment',
+    'lyrics'
+  ] as const) {
+    const value = values[field]
+    if (value === undefined) continue
+    if (value === null) {
+      patch[field] = null
+      continue
+    }
+    if (typeof value !== 'string') continue
+    patch[field] = value.trim() || null
+  }
+  for (const field of ['track', 'trackCount', 'disc', 'discCount', 'year'] as const) {
+    const value = values[field]
+    if (value === undefined) continue
+    if (value === null) {
+      patch[field] = null
+      continue
+    }
+    if (typeof value === 'number' && Number.isSafeInteger(value) && value > 0) patch[field] = value
+  }
+  if (values.coverData === null) patch.coverData = null
+  else if (values.coverData instanceof Uint8Array) patch.coverData = values.coverData
   return patch
 }
 

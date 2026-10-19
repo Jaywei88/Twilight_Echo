@@ -137,7 +137,10 @@ export function registerLibraryIpc(ipcMain: IpcMain): void {
     authorizeAudioFile: async (filePath) =>
       await resolveAuthorizedAudioFile(normalizeLocalPath(filePath, 'tag audio file path')),
     redactError: (error) =>
-      redactSensitiveText(error instanceof Error ? error.message : String(error))
+      redactSensitiveText(error instanceof Error ? error.message : String(error)),
+    sendProgress: (event, progress) => {
+      ;(event as IpcMainInvokeEvent).sender.send(IPC.library.tagWriteProgress, progress)
+    }
   })
   const duplicateDetectionIpc = createDuplicateDetectionIpcHandlers({
     assertTrustedSender: (event) =>
@@ -453,6 +456,16 @@ export function registerLibraryIpc(ipcMain: IpcMain): void {
   ipcMain.handle(
     IPC.library.restoreTags,
     async (event, rawRequest: unknown) => await tagWriteIpc.restore(event, rawRequest)
+  )
+
+  ipcMain.handle(
+    IPC.library.readTags,
+    async (event, rawRequest: unknown) => await tagWriteIpc.read(event, rawRequest)
+  )
+
+  ipcMain.handle(
+    IPC.library.cancelTagWrite,
+    async (event, rawRequest: unknown) => await tagWriteIpc.cancel(event, rawRequest)
   )
 }
 

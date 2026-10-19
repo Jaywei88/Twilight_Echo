@@ -6,22 +6,33 @@ import {
   writeJsonFileAtomic,
   type JsonFileOptions
 } from '../persistence/jsonFile.ts'
+import type { LocalLibraryTagSnapshot } from '../../shared/localLibraryTags.ts'
 
 const TAG_WRITE_JOURNAL_FILE = 'tag-write-journal.json'
 const TAG_WRITE_JOURNAL_MAX_BYTES = 2 * 1024 * 1024
+const MAX_TAG_READ_COVER_BYTES = 8 * 1024 * 1024
 
 export interface TagWriteInput {
   filePath: string
-  title?: string
-  artist?: string
-  album?: string
-  albumArtist?: string
-  track?: number
-  disc?: number
-  year?: number
-  genre?: string
-  coverData?: Uint8Array
+  title?: string | null
+  artist?: string | null
+  album?: string | null
+  albumArtist?: string | null
+  track?: number | null
+  trackCount?: number | null
+  disc?: number | null
+  discCount?: number | null
+  year?: number | null
+  genre?: string | null
+  composer?: string | null
+  comment?: string | null
+  lyrics?: string | null
+  coverData?: Uint8Array | null
   coverMimeType?: 'image/jpeg' | 'image/png'
+}
+
+export interface TagReadOptions {
+  includeCover?: boolean
 }
 
 export interface TagWriteResult {
@@ -43,8 +54,18 @@ export interface TagWriteJournalEntry extends TagWriteResult {
 
 export interface TagWriteJournal {
   version: 2
-  state: 'writing' | 'completed' | 'rolledBack'
+  state: 'writing' | 'completed' | 'rolledBack' | 'cancelled'
   entries: TagWriteJournalEntry[]
+}
+
+export interface TagWriteBatchOptions {
+  shouldCancel?: () => boolean
+  onProgress?: (progress: { current: number; total: number; filePath: string }) => void
+}
+
+export interface TagWriteBatchOutcome {
+  entries: TagWriteJournalEntry[]
+  cancelled: boolean
 }
 
 export class TagWriteBatchError extends Error {
@@ -135,6 +156,65 @@ export function writeTagsBatchWithRollback(
   }
 }
 
+export async function writeTagsBatchWithRollbackAsync(
+  inputs: readonly TagWriteInput[],
+  backupRoot: string,
+  options: TagWriteBatchOptions = {}
+): Promise<TagWriteBatchOutcome> {
+  const journal: TagWriteJournal = {
+    version: 2,
+    state: 'writing',
+    entries: inputs.map((input) => ({
+      filePath: input.filePath,
+      backupPath: tagBackupPath(input.filePath, backupRoot),
+      status: 'pending'
+    }))
+  }
+  persistTagWriteJournal(backupRoot, journal)
+
+  try {
+    for (let index = 0; index < inputs.length; index++) {
+      if (options.shouldCancel?.()) {
+        journal.state = 'cancelled'
+        persistTagWriteJournal(backupRoot, journal)
+        return { entries: cloneJournal(journal).entries, cancelled: true }
+      }
+      const input = inputs[index]
+      const entry = journal.entries[index]
+      try {
+        copyFileSync(input.filePath, entry.backupPath)
+      } catch (error) {
+        entry.status = 'failed'
+        entry.error = errorMessage(error)
+        persistTagWriteJournal(backupRoot, journal)
+        throw error
+      }
+      entry.status = 'backedUp'
+      persistTagWriteJournal(backupRoot, journal)
+
+      try {
+        writeTags(input)
+      } catch (error) {
+        entry.error = errorMessage(error)
+        persistTagWriteJournal(backupRoot, journal)
+        throw error
+      }
+      entry.status = 'written'
+      persistTagWriteJournal(backupRoot, journal)
+      options.onProgress?.({ current: index + 1, total: inputs.length, filePath: input.filePath })
+      await yieldToEventLoop()
+    }
+    journal.state = 'completed'
+    persistTagWriteJournal(backupRoot, journal)
+    return { entries: cloneJournal(journal).entries, cancelled: false }
+  } catch (error) {
+    rollbackJournalEntries(journal, backupRoot)
+    journal.state = 'rolledBack'
+    persistTagWriteJournal(backupRoot, journal)
+    throw new TagWriteBatchError('Tag write batch failed', journal, error)
+  }
+}
+
 export function readTagWriteJournal(backupRoot: string): TagWriteJournal {
   const loaded = loadJsonFileWithBackup(
     getTagWriteJournalPath(backupRoot),
@@ -162,20 +242,68 @@ export function clearTagBackup(filePath: string, backupRoot: string): void {
   rmSync(tagBackupPath(filePath, backupRoot), { force: true })
 }
 
+export function readTagsFromFile(
+  filePath: string,
+  options: TagReadOptions = {}
+): LocalLibraryTagSnapshot {
+  const { File, PictureType } = loadTaglib()
+  let media: Taglib.File | undefined
+  try {
+    media = File.createFromPath(filePath)
+    const tag = media.tag
+    const pictures = tag.pictures
+    const picture =
+      pictures.find((candidate) => candidate.type === PictureType.FrontCover) ?? pictures[0]
+    return {
+      title: optionalText(tag.title),
+      artist: optionalText(tag.performers[0]),
+      album: optionalText(tag.album),
+      albumArtist: optionalText(tag.albumArtists[0]),
+      track: optionalPositiveNumber(tag.track),
+      trackCount: optionalPositiveNumber(tag.trackCount),
+      disc: optionalPositiveNumber(tag.disc),
+      discCount: optionalPositiveNumber(tag.discCount),
+      year: optionalPositiveNumber(tag.year),
+      genre: optionalText(tag.genres[0]),
+      composer: optionalText(tag.composers.join('; ')),
+      comment: optionalText(tag.comment),
+      lyrics: optionalText(tag.lyrics),
+      hasCover: Boolean(picture),
+      coverMimeType: picture?.mimeType ? picture.mimeType : null,
+      ...(options.includeCover && picture && picture.data.length <= MAX_TAG_READ_COVER_BYTES
+        ? { coverData: picture.data.toByteArray() }
+        : {})
+    }
+  } finally {
+    media?.dispose()
+  }
+}
+
 function writeTags(input: TagWriteInput): void {
   const { ByteVector, File, Picture, PictureType } = loadTaglib()
   let media: Taglib.File | undefined
   try {
     media = File.createFromPath(input.filePath)
-    if (input.title !== undefined) media.tag.title = input.title
-    if (input.artist !== undefined) media.tag.performers = [input.artist]
-    if (input.album !== undefined) media.tag.album = input.album
-    if (input.albumArtist !== undefined) media.tag.albumArtists = [input.albumArtist]
-    if (input.track !== undefined) media.tag.track = input.track
-    if (input.disc !== undefined) media.tag.disc = input.disc
-    if (input.year !== undefined) media.tag.year = input.year
-    if (input.genre !== undefined) media.tag.genres = [input.genre]
-    if (input.coverData && input.coverMimeType) {
+    if (input.title !== undefined) media.tag.title = input.title ?? ''
+    if (input.artist !== undefined) {
+      media.tag.performers = input.artist ? [input.artist] : []
+    }
+    if (input.album !== undefined) media.tag.album = input.album ?? ''
+    if (input.albumArtist !== undefined) {
+      media.tag.albumArtists = input.albumArtist ? [input.albumArtist] : []
+    }
+    if (input.track !== undefined) media.tag.track = input.track ?? 0
+    if (input.trackCount !== undefined) media.tag.trackCount = input.trackCount ?? 0
+    if (input.disc !== undefined) media.tag.disc = input.disc ?? 0
+    if (input.discCount !== undefined) media.tag.discCount = input.discCount ?? 0
+    if (input.year !== undefined) media.tag.year = input.year ?? 0
+    if (input.genre !== undefined) media.tag.genres = input.genre ? [input.genre] : []
+    if (input.composer !== undefined) media.tag.composers = splitTagValues(input.composer)
+    if (input.comment !== undefined) media.tag.comment = input.comment ?? ''
+    if (input.lyrics !== undefined) media.tag.lyrics = input.lyrics ?? ''
+    if (input.coverData === null) {
+      media.tag.pictures = []
+    } else if (input.coverData && input.coverMimeType) {
       media.tag.pictures = [
         Picture.fromFullData(
           ByteVector.fromByteArray(input.coverData),
@@ -189,6 +317,26 @@ function writeTags(input: TagWriteInput): void {
   } finally {
     media?.dispose()
   }
+}
+
+function splitTagValues(value: string | null): string[] {
+  if (!value) return []
+  return value
+    .split(/[;；\n]/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+}
+
+function optionalText(value: string | undefined | null): string | null {
+  return typeof value === 'string' && value.trim() ? value : null
+}
+
+function optionalPositiveNumber(value: number | undefined | null): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null
+}
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise<void>((resolve) => setImmediate(resolve))
 }
 
 function rollbackJournalEntries(journal: TagWriteJournal, backupRoot: string): void {
@@ -216,7 +364,10 @@ function isTagWriteJournal(value: unknown): value is TagWriteJournal {
   const record = value as Record<string, unknown>
   if (
     record.version !== 2 ||
-    (record.state !== 'writing' && record.state !== 'completed' && record.state !== 'rolledBack') ||
+    (record.state !== 'writing' &&
+      record.state !== 'completed' &&
+      record.state !== 'rolledBack' &&
+      record.state !== 'cancelled') ||
     !Array.isArray(record.entries)
   ) {
     return false

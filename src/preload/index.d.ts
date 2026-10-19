@@ -101,8 +101,11 @@ import type {
   LocalMusicLibraryDocument
 } from '../shared/localLibrary.ts'
 import type {
+  LocalLibraryTagReadRequest,
+  LocalLibraryTagReadResult,
   LocalLibraryTagRestoreRequest,
   LocalLibraryTagRestoreResult,
+  LocalLibraryTagWriteProgress,
   LocalLibraryTagWriteRequest,
   LocalLibraryTagWriteResult
 } from '../shared/localLibraryTags.ts'
@@ -373,6 +376,9 @@ interface WindowAPI {
     reset: () => Promise<LocalLibraryResetResult>
     writeTags: (request: LocalLibraryTagWriteRequest) => Promise<LocalLibraryTagWriteResult>
     restoreTags: (request: LocalLibraryTagRestoreRequest) => Promise<LocalLibraryTagRestoreResult>
+    readTags: (request: LocalLibraryTagReadRequest) => Promise<LocalLibraryTagReadResult>
+    cancelTagWrite: (operationId: string) => Promise<boolean>
+    onTagWriteProgress: (cb: (progress: LocalLibraryTagWriteProgress) => void) => () => void
     scanStartup: () => Promise<LocalLibraryScanUpdate>
     scanFull: () => Promise<LocalLibraryScanUpdate>
     getScanStatus: () => Promise<LocalLibraryScanStatus>

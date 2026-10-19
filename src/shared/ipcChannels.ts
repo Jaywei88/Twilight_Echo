@@ -101,6 +101,7 @@ export const IPC = {
   },
   library: {
     cancelScan: 'library:cancelScan',
+    cancelTagWrite: 'library:cancelTagWrite',
     changed: 'library:changed',
     clearExclusions: 'library:clearExclusions',
     coversMissing: 'library:covers-missing',
@@ -108,6 +109,7 @@ export const IPC = {
     getScanStatus: 'library:getScanStatus',
     getWatcherStatus: 'library:getWatcherStatus',
     pauseScan: 'library:pauseScan',
+    readTags: 'library:readTags',
     removeTracks: 'library:removeTracks',
     reset: 'library:reset',
     restoreExclusions: 'library:restoreExclusions',
@@ -117,6 +119,7 @@ export const IPC = {
     scanStatus: 'library:scan-status',
     scanFull: 'library:scanFull',
     scanStartup: 'library:scanStartup',
+    tagWriteProgress: 'library:tagWriteProgress',
     writeTags: 'library:writeTags'
   }
 } as const

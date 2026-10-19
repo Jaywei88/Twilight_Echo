@@ -51,9 +51,14 @@ const tagFieldLabels: Record<keyof LocalLibraryTagPatch, string> = {
   album: '专辑',
   albumArtist: '专辑歌手',
   track: '曲目号',
+  trackCount: '曲目总数',
   disc: '碟号',
+  discCount: '碟总数',
   year: '年份',
   genre: '流派',
+  composer: '作曲',
+  comment: '备注',
+  lyrics: '歌词',
   coverData: '封面'
 }
 const previewRows = computed(() =>

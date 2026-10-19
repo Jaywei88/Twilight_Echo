@@ -72,6 +72,160 @@ test('trusted and authorized tag IPC writes a real WAV with a PNG cover and rest
   }
 })
 
+test('tag IPC writes, reads, and clears extended tags with cover progress', async () => {
+  const fixture = createFixture()
+  try {
+    const event = { sender: 'trusted-renderer' }
+    const progress: Array<{ operationId: string; current: number; total: number }> = []
+    const handlers = createTagWriteIpcHandlers({
+      backupRoot: fixture.backupRoot,
+      assertTrustedSender: () => {},
+      authorizeAudioFile: async (filePath) => filePath,
+      redactError: errorMessage,
+      sendProgress: (_event, value) => progress.push(value)
+    })
+
+    const writeResult = await handlers.write(event, {
+      operationId: 'workshop_write_1',
+      items: [
+        {
+          filePath: fixture.audioFile,
+          title: 'Extended',
+          artist: 'Artist',
+          album: 'Album',
+          albumArtist: 'Album Artist',
+          track: 3,
+          trackCount: 12,
+          disc: 1,
+          discCount: 2,
+          year: 2024,
+          genre: 'Pop',
+          composer: 'Composer A; Composer B',
+          comment: 'Workshop note',
+          lyrics: 'First line\nSecond line',
+          coverData: PNG_1X1
+        }
+      ]
+    })
+    assert.deepEqual(writeResult, {
+      operationId: 'workshop_write_1',
+      items: [{ filePath: fixture.audioFile, status: 'success' }]
+    })
+    assert.deepEqual(progress, [
+      { operationId: 'workshop_write_1', current: 1, total: 1, filePath: fixture.audioFile }
+    ])
+
+    const readResult = await handlers.read(event, {
+      filePaths: [fixture.audioFile],
+      includeCover: true
+    })
+    const snapshot = readResult.items[0].tags
+    assert.ok(snapshot)
+    assert.deepEqual(
+      {
+        ...snapshot,
+        coverData: snapshot.coverData ? snapshot.coverData.byteLength : 0
+      },
+      {
+        title: 'Extended',
+        artist: 'Artist',
+        album: 'Album',
+        albumArtist: 'Album Artist',
+        track: 3,
+        trackCount: 12,
+        disc: 1,
+        discCount: 2,
+        year: 2024,
+        genre: 'Pop',
+        composer: 'Composer A; Composer B',
+        comment: 'Workshop note',
+        lyrics: 'First line\nSecond line',
+        hasCover: true,
+        coverMimeType: 'image/png',
+        coverData: PNG_1X1.byteLength
+      }
+    )
+
+    const clearResult = await handlers.write(event, {
+      operationId: 'workshop_clear_1',
+      items: [
+        {
+          filePath: fixture.audioFile,
+          title: null,
+          artist: null,
+          album: null,
+          albumArtist: null,
+          track: null,
+          trackCount: null,
+          disc: null,
+          discCount: null,
+          year: null,
+          genre: null,
+          composer: null,
+          comment: null,
+          lyrics: null,
+          coverData: null
+        }
+      ]
+    })
+    assert.deepEqual(clearResult.items, [{ filePath: fixture.audioFile, status: 'success' }])
+    const cleared = await handlers.read(event, { filePaths: [fixture.audioFile] })
+    assert.deepEqual(cleared.items[0].tags, {
+      title: null,
+      artist: null,
+      album: null,
+      albumArtist: null,
+      track: null,
+      trackCount: null,
+      disc: null,
+      discCount: null,
+      year: null,
+      genre: null,
+      composer: null,
+      comment: null,
+      lyrics: null,
+      hasCover: false,
+      coverMimeType: null
+    })
+  } finally {
+    fixture.dispose()
+  }
+})
+
+test('tag IPC cancels a queued write before it starts', async () => {
+  const fixture = createFixture()
+  try {
+    const event = { sender: 'trusted-renderer' }
+    const handlers = createTagWriteIpcHandlers({
+      backupRoot: fixture.backupRoot,
+      assertTrustedSender: () => {},
+      authorizeAudioFile: async (filePath) => filePath,
+      redactError: errorMessage
+    })
+
+    const pending = handlers.write(event, {
+      operationId: 'cancel_before_start',
+      items: [{ filePath: fixture.audioFile, title: 'Never Written' }]
+    })
+    assert.equal(await handlers.cancel(event, { operationId: 'cancel_before_start' }), true)
+    assert.deepEqual(await pending, {
+      operationId: 'cancel_before_start',
+      cancelled: true,
+      items: [{ filePath: fixture.audioFile, status: 'notAttempted', message: '写入已取消' }]
+    })
+    assert.equal(await handlers.cancel(event, { operationId: 'missing_operation' }), false)
+    assert.throws(() => readTagWriteJournal(fixture.backupRoot), /does not exist/)
+    assert.deepEqual(readTags(fixture.audioFile), {
+      title: '',
+      artist: '',
+      track: 0,
+      coverMime: null
+    })
+  } finally {
+    fixture.dispose()
+  }
+})
+
 test('tag IPC rejects an over-limit PNG, unauthorized paths, and reports a real batch rollback per file', async () => {
   const fixture = createFixture()
   try {

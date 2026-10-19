@@ -204,11 +204,17 @@ export type {
 } from '../shared/localLibrary.ts'
 
 export type {
+  LocalLibraryTagCancelRequest,
   LocalLibraryTagFailure,
   LocalLibraryTagPatch,
+  LocalLibraryTagReadItem,
+  LocalLibraryTagReadRequest,
+  LocalLibraryTagReadResult,
   LocalLibraryTagRestoreRequest,
   LocalLibraryTagRestoreResult,
+  LocalLibraryTagSnapshot,
   LocalLibraryTagWriteItem,
+  LocalLibraryTagWriteProgress,
   LocalLibraryTagWriteRequest,
   LocalLibraryTagWriteResult
 } from '../shared/localLibraryTags.ts'

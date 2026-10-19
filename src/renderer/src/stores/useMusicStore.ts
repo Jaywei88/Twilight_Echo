@@ -684,13 +684,16 @@ export function useMusicStore() {
       changed++
       return {
         ...track,
-        ...(patch.title !== undefined ? { title: patch.title } : {}),
-        ...(patch.artist !== undefined ? { artist: patch.artist } : {}),
-        ...(patch.album !== undefined ? { album: patch.album } : {}),
-        ...(patch.albumArtist !== undefined ? { albumArtist: patch.albumArtist } : {}),
+        ...(patch.title != null ? { title: patch.title } : {}),
+        ...(patch.artist != null ? { artist: patch.artist } : {}),
+        ...(patch.album != null ? { album: patch.album } : {}),
+        ...(patch.albumArtist !== undefined
+          ? { albumArtist: patch.albumArtist ?? undefined }
+          : {}),
         ...(patch.genre !== undefined ? { genre: patch.genre } : {}),
-        ...(patch.track !== undefined ? { trackNumber: patch.track } : {}),
-        ...(patch.disc !== undefined ? { discNumber: patch.disc } : {})
+        ...(patch.track !== undefined ? { trackNumber: patch.track ?? undefined } : {}),
+        ...(patch.disc !== undefined ? { discNumber: patch.disc ?? undefined } : {}),
+        ...(patch.lyrics !== undefined ? { lyrics: patch.lyrics } : {})
       }
     })
     if (changed === 0) return 0
