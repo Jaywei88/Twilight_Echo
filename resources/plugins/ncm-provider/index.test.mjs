@@ -1357,6 +1357,22 @@ test('song search uses the web weapi path and reuses identical successful querie
   }
 })
 
+test('song search stays anonymous so account risk control cannot fail a batch', async () => {
+  let seenCookie = 'not-called'
+  const provider = await activateProvider(async (path, cookie) => {
+    seenCookie = cookie
+    return { result: { songs: [song(7)], songCount: 1 } }
+  })
+
+  try {
+    const result = await provider.searchSongs('晴天 周杰伦')
+    assert.equal(result.items.length, 1)
+    assert.equal(seenCookie, undefined)
+  } finally {
+    ncmProvider.deactivate()
+  }
+})
+
 test('empty song searches are never cached as successful results', async () => {
   let calls = 0
   const provider = await activateProvider(async () => {

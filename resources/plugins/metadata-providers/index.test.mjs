@@ -78,6 +78,8 @@ test('QQ search normalizes tags, cover, track number and pagination', async () =
     const providers = await activateProviders()
     const result = await providers.get('qq').searchSongs('月亮代表我的心 邓丽君', 20, 20)
     assert.equal(requestedUrl.hostname, 'c.y.qq.com')
+    assert.equal(requestedUrl.pathname, '/soso/fcgi-bin/search_for_qq_cp')
+    assert.equal(requestedUrl.searchParams.get('g_tk'), '5381')
     assert.equal(requestedUrl.searchParams.get('w'), '月亮代表我的心 邓丽君')
     assert.equal(requestedUrl.searchParams.get('n'), '20')
     assert.equal(requestedUrl.searchParams.get('p'), '2')
@@ -103,6 +105,35 @@ test('QQ search normalizes tags, cover, track number and pagination', async () =
   } finally {
     dispose()
   }
+})
+
+test('QQ legacy search fields normalize mid, album cover and release date', () => {
+  const track = metadataProviders.normalizeQqSong({
+    songmid: '0039MnYb0qxYhV',
+    songid: 97773,
+    songname: '晴天',
+    singer: [{ name: '周杰伦' }],
+    albummid: '000MkMni19ClKG',
+    albumname: '叶惠美',
+    interval: 269,
+    pubtime: 1059580800
+  })
+  assert.deepEqual(track, {
+    id: 'qq:0039MnYb0qxYhV',
+    title: '晴天',
+    artist: '周杰伦',
+    album: '叶惠美',
+    filePath: 'qq:0039MnYb0qxYhV',
+    fileName: '周杰伦 - 晴天',
+    duration: 269,
+    size: 0,
+    cover: 'https://y.gtimg.cn/music/photo_new/T002R500x500M000000MkMni19ClKG.jpg',
+    lyrics: null,
+    source: 'qq',
+    qqSongMid: '0039MnYb0qxYhV',
+    qqSongId: 97773,
+    releaseDate: '2003-07-31'
+  })
 })
 
 test('QQ lyrics decode HTML entities and are cached per song', async () => {

@@ -218,6 +218,13 @@ function normalizeDate(value) {
   return Number(match[1]) > 0 ? `${match[1]}-${match[2]}-${match[3]}` : null
 }
 
+function normalizeUnixDate(value) {
+  const seconds = Number(value)
+  if (!Number.isFinite(seconds) || seconds <= 0) return null
+  // QQ 的 pubtime 以北京时间零点为基准，直接按 UTC 会少一天。
+  return new Date(seconds * 1000 + 8 * 60 * 60 * 1000).toISOString().slice(0, 10)
+}
+
 function clampLimit(value) {
   const number = Math.trunc(Number(value))
   if (!Number.isFinite(number)) return 20
@@ -418,7 +425,9 @@ async function fetchQqSearch(keywords, limit, offset, signal) {
   const release = await qqSearchLimiter.acquire(signal)
   try {
     const page = Math.floor(offset / limit) + 1
-    const url = new URL('https://c.y.qq.com/soso/fcgi-bin/client_search_cp')
+    // client_search_cp 已返回空响应 500，musicu.fcg 匿名访问返回 code 2001；
+    // search_for_qq_cp 是目前仍允许匿名调用的网页搜索入口。
+    const url = new URL('https://c.y.qq.com/soso/fcgi-bin/search_for_qq_cp')
     url.search = new URLSearchParams({
       format: 'json',
       w: keywords,
@@ -426,10 +435,9 @@ async function fetchQqSearch(keywords, limit, offset, signal) {
       p: String(page),
       new_json: '1',
       cr: '1',
-      t: '0',
       aggr: '1',
-      lossless: '0',
-      flag_qc: '0'
+      lossless: '1',
+      g_tk: '5381'
     }).toString()
     const data = await fetchJson(url, {
       headers: QQ_HEADERS,
@@ -438,7 +446,7 @@ async function fetchQqSearch(keywords, limit, offset, signal) {
     })
     const songs = Array.isArray(data?.data?.song?.list) ? data.data.song.list : []
     const declaredTotal = Number(data?.data?.song?.totalnum)
-    const items = songs.map(normalizeQqSong).filter(Boolean)
+    const items = songs.slice(0, limit).map(normalizeQqSong).filter(Boolean)
     return {
       items,
       total: Number.isFinite(declaredTotal) && declaredTotal > 0 ? declaredTotal : items.length
@@ -449,24 +457,28 @@ async function fetchQqSearch(keywords, limit, offset, signal) {
 }
 
 export function normalizeQqSong(song) {
-  const mid = cleanString(song?.mid)
-  const songId = positiveInteger(song?.id)
+  const mid = cleanString(song?.mid) || cleanString(song?.songmid)
+  const songId = positiveInteger(song?.id) ?? positiveInteger(song?.songid)
   const idPart = mid || (songId ? String(songId) : '')
   if (!idPart) return null
-  const title = cleanString(song?.name) || cleanString(song?.title)
+  const title =
+    cleanString(song?.name) || cleanString(song?.title) || cleanString(song?.songname)
   if (!title) return null
   const singerNames = (Array.isArray(song?.singer) ? song.singer : [])
     .map((singer) => cleanString(singer?.name))
     .filter(Boolean)
   const artist = singerNames.join(' / ') || cleanString(song?.artist) || '未知艺术家'
-  const albumMid = cleanString(song?.album?.mid)
+  const albumMid = cleanString(song?.album?.mid) || cleanString(song?.albummid)
   const album = cleanString(song?.album?.name) || cleanString(song?.albumname) || '未知专辑'
   const albumCover = albumMid
     ? `https://y.gtimg.cn/music/photo_new/T002R500x500M000${albumMid}.jpg`
     : null
   const duration = positiveInteger(song?.interval) ?? 0
   const releaseDate =
-    normalizeDate(song?.time_public) ?? normalizeDate(song?.album?.time_public) ?? undefined
+    normalizeDate(song?.time_public) ??
+    normalizeDate(song?.album?.time_public) ??
+    normalizeUnixDate(song?.pubtime) ??
+    undefined
   const trackNumber = positiveInteger(song?.index_album)
   const discIndex = Number(song?.index_cd)
   const discNumber =

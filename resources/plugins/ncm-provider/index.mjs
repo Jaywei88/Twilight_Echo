@@ -617,12 +617,14 @@ async function requestOptionalAuth(path, requestContext) {
 
 async function requestOptionalAuthRead(
   path,
-  { attempts = 2, label = path, signal, failFastOnRateLimit = false } = {}
+  { attempts = 2, label = path, signal, failFastOnRateLimit = false, anonymous = false } = {}
 ) {
   let lastError = null
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
-      return await requestOptionalAuth(path, { signal, failFastOnRateLimit })
+      return anonymous
+        ? await request(path, undefined, { signal, failFastOnRateLimit })
+        : await requestOptionalAuth(path, { signal, failFastOnRateLimit })
     } catch (error) {
       lastError = error
       if (failFastOnRateLimit && isRateLimitError(error)) break
@@ -2384,6 +2386,8 @@ async function searchSongs(keywords, limit = 30, offset = 0, requestContext) {
   }
   // MusicTag 的网易云来源走网页版 weapi/cloudsearch/pc；模块默认的 eapi
   // （手机端搜索）在匿名高频时会更容易被 405 风控。
+  // 批量搜索固定用匿名会话：登录态账号一旦被风控，整批匹配都会 405，
+  // 而搜索结果本身不依赖账号。
   let data
   try {
     data = await requestOptionalAuthRead(
@@ -2392,7 +2396,8 @@ async function searchSongs(keywords, limit = 30, offset = 0, requestContext) {
         attempts: SEARCH_READ_ATTEMPTS,
         label: `search ${keywords}`,
         signal: requestContext?.signal,
-        failFastOnRateLimit: true
+        failFastOnRateLimit: true,
+        anonymous: true
       }
     )
   } catch (error) {
