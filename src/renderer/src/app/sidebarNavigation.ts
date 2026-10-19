@@ -1,5 +1,6 @@
 import type { NavigationPageDefinition } from '@renderer/app/navigationPages.ts'
 import type { ThemeIconSlot } from '../../../shared/theme.ts'
+import { MUSIC_TAG_WORKSHOP_NAV_PAGE_ID } from '../../../shared/musicTagWorkshop.ts'
 
 export type SidebarGroupId = 'streaming' | 'local-library'
 
@@ -23,7 +24,8 @@ const membership = new Map<string, SidebarGroupId>([
   ),
   ...['allSongs', 'albums', 'artists', 'playlists', 'folders', 'genres', 'analytics'].map(
     (id): [string, SidebarGroupId] => [id, 'local-library']
-  )
+  ),
+  [MUSIC_TAG_WORKSHOP_NAV_PAGE_ID, 'local-library']
 ])
 
 export function sidebarGroupId(pageId: string): SidebarGroupId | undefined {

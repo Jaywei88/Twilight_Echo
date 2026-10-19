@@ -594,7 +594,7 @@ test('enable and disable cannot acknowledge success before state is durable', as
   await assert.rejects(f.manager.disable(f.descriptor.id), /state disk unavailable/)
 })
 
-for (const directory of ['ncm-provider', 'theme-workshop']) {
+for (const directory of ['ncm-provider', 'theme-workshop', 'music-tag-workshop']) {
   test(`preview host validates and activates the ${directory} engine range`, async (t) => {
     const manifest = JSON.parse(
       fs.readFileSync(

@@ -34,6 +34,7 @@ import { resolveConfiguredDownloadRoot } from '../security/localPaths.ts'
 import { reconcileThemeAfterPluginChange } from './themes.ts'
 import { setupThemeWorkshopIpc, prepareThemeWorkshopDisable } from './themeWorkshop.ts'
 import { THEME_WORKSHOP_ID } from '../../shared/themeWorkshop.ts'
+import { MUSIC_TAG_WORKSHOP_ID } from '../../shared/musicTagWorkshop.ts'
 import {
   configureDynamicIsland,
   hideDynamicIsland,
@@ -79,7 +80,11 @@ export function setupPluginIpc(): void {
     const options = rawOptions && typeof rawOptions === 'object' ? (rawOptions as { theme?: unknown }) : {}
     showTrayPlayerWindow({ theme: normalizeExperienceWindowTheme(options.theme) })
   })
-  const bundledPluginIds = ['com.twilightecho.provider.ncm', THEME_WORKSHOP_ID]
+  const bundledPluginIds = [
+    'com.twilightecho.provider.ncm',
+    THEME_WORKSHOP_ID,
+    MUSIC_TAG_WORKSHOP_ID
+  ]
   setupThemeWorkshopIpc()
   runtime.pluginManager = new TwilightPluginManager({
     appVersion: app.getVersion(),
@@ -103,6 +108,11 @@ export function setupPluginIpc(): void {
         id: THEME_WORKSHOP_ID,
         sourcePath: bundledPluginPath('theme-workshop'),
         defaultEnabled: false
+      },
+      {
+        id: MUSIC_TAG_WORKSHOP_ID,
+        sourcePath: bundledPluginPath('music-tag-workshop'),
+        defaultEnabled: true
       }
     ],
     ncm: {

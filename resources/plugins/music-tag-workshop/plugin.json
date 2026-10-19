@@ -1,0 +1,13 @@
+{
+  "id": "com.twilightecho.tool.music-tag-workshop",
+  "name": "标签工作台",
+  "version": "1.0.0",
+  "description": "批量整理本地音乐的标签、封面、歌词与文件名。",
+  "author": "Twilight Echo",
+  "license": "Apache-2.0",
+  "type": ["tool", "ui"],
+  "main": "index.mjs",
+  "engines": { "twilightEcho": ">=1.2.0" },
+  "apiVersion": 3,
+  "permissions": ["ui:inject"]
+}

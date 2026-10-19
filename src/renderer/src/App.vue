@@ -54,6 +54,9 @@ const ThemeStudioPage = defineAsyncComponent(() => import('./components/ThemeStu
 const ThemeWorkshopPage = defineAsyncComponent(
   () => import('./components/theme-workshop/ThemeWorkshopPage.vue')
 )
+const TagWorkshopPage = defineAsyncComponent(
+  () => import('./components/tag-workshop/TagWorkshopPage.vue')
+)
 const PluginPage = defineAsyncComponent(() => import('./components/PluginPage.vue'))
 const EqualizerPage = defineAsyncComponent(() => import('./components/EqualizerPage.vue'))
 const DspRackPage = defineAsyncComponent(() => import('./components/DspRackPage.vue'))
@@ -82,6 +85,10 @@ import { useSettingsStore } from './stores/useSettingsStore'
 import { useThemeStore, applyActiveTheme, bootstrapThemeRuntime } from './stores/useThemeStore'
 import { getStartupSnapshot } from './app/startupSnapshot'
 import { isAfterglowRendererRestore } from '../../shared/afterglowMode.ts'
+import {
+  MUSIC_TAG_WORKSHOP_ID,
+  MUSIC_TAG_WORKSHOP_PAGE_ID
+} from '../../shared/musicTagWorkshop.ts'
 import { startPluginPlaylistImports, useExtensionRegistry } from './extensions/registry'
 import { applyStartupExperience } from './app/startupExperience'
 import { syncPluginProviders, useMediaProviders } from './providers'
@@ -1301,6 +1308,12 @@ onBeforeUnmount(() => onWorkshopDecorationsUnmount?.())
             v-if="
               activePluginPage?.pluginId === 'com.twilightecho.tool.theme-workshop' &&
               activePluginPage.id === 'theme-workshop'
+            "
+          />
+          <TagWorkshopPage
+            v-else-if="
+              activePluginPage?.pluginId === MUSIC_TAG_WORKSHOP_ID &&
+              activePluginPage.id === MUSIC_TAG_WORKSHOP_PAGE_ID
             "
           />
           <PluginExtensionPage
